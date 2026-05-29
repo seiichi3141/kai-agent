@@ -42,6 +42,32 @@ def test_tui_voice_on_starts_always_on_streaming(monkeypatch):
     assert server._voice_event_sid == "sid-1"
 
 
+def test_tui_voice_on_starts_live_overlay_when_configured(monkeypatch):
+    from tui_gateway import server
+
+    started = []
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "streaming_stt": {"enabled": False},
+            "live_overlay": {"enabled": True},
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_ensure_live_overlay_server",
+        lambda: started.append(True) or "http://127.0.0.1:8765/overlay",
+    )
+    monkeypatch.setenv("HERMES_VOICE", "0")
+
+    result = server._methods["voice.toggle"]("rid-1", {"action": "on", "session_id": "sid-1"})
+
+    assert result["result"]["enabled"] is True
+    assert result["result"]["overlay_url"] == "http://127.0.0.1:8765/overlay"
+    assert started == [True]
+
+
 def test_tui_streaming_stt_baseline_buffers_until_debounce_flush(monkeypatch):
     from tui_gateway import server
 
@@ -249,6 +275,52 @@ def test_tui_streaming_stt_commit_delay_rebuffers_when_speech_continues(monkeypa
             "voice.transcript",
             {"text": "次の行動は右に行くべきか。 まだ答えないで。今なら答えてください。"},
         ),
+    ]
+    server._cancel_streaming_stt_submit_buffer(flush=False)
+
+
+def test_tui_streaming_stt_publishes_partial_and_final_overlay_captions(monkeypatch):
+    from tui_gateway import server
+
+    emitted = []
+    captions = []
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "streaming_stt": {
+                "enabled": True,
+                "provider": "deepgram",
+                "submit": {
+                    "debounce_ms": 999999,
+                    "commit_delay_ms": 0,
+                    "min_chars": 8,
+                    "joiner": " ",
+                    "max_wait_ms": 6000,
+                },
+            },
+            "live_overlay": {"enabled": True},
+        },
+    )
+    monkeypatch.setattr(server, "_voice_emit", lambda event, payload=None: emitted.append((event, payload)))
+    monkeypatch.setattr(
+        server,
+        "_publish_live_overlay_caption",
+        lambda text, *, final: captions.append((text, final)),
+    )
+    server._cancel_streaming_stt_submit_buffer(flush=False)
+
+    server._queue_streaming_stt_final("ボス戦に入ります。", speech_final=True)
+    server._handle_streaming_stt_partial("ボス戦に入ります")
+    server._cancel_streaming_stt_submit_buffer(flush=True)
+
+    assert captions == [
+        ("ボス戦に入ります", False),
+        ("ボス戦に入ります。", True),
+    ]
+    assert emitted == [
+        ("voice.partial_transcript", {"text": "ボス戦に入ります"}),
+        ("voice.transcript", {"text": "ボス戦に入ります。"}),
     ]
     server._cancel_streaming_stt_submit_buffer(flush=False)
 

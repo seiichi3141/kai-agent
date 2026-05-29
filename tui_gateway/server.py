@@ -9308,6 +9308,38 @@ def _streaming_stt_always_on() -> bool:
     return bool(streaming_cfg.get("always_on"))
 
 
+def _streaming_stt_is_running() -> bool:
+    with _streaming_stt_lock:
+        return _streaming_stt_session is not None and _streaming_stt_session.is_running()
+
+
+def _publish_live_overlay_caption(text: str, *, final: bool) -> None:
+    cfg = _load_cfg()
+    try:
+        from hermes_cli.live_overlay import publish_caption
+
+        publish_caption(cfg if isinstance(cfg, dict) else {}, text, final=final)
+    except Exception as exc:
+        logger.debug("live overlay caption publish failed: %s", exc, exc_info=True)
+
+
+def _ensure_live_overlay_server() -> str | None:
+    cfg = _load_cfg()
+    try:
+        from hermes_cli.live_overlay import ensure_live_overlay_server
+
+        server = ensure_live_overlay_server(cfg if isinstance(cfg, dict) else {})
+        return server.overlay_url if server is not None else None
+    except Exception as exc:
+        logger.warning("live overlay server failed to start: %s", exc, exc_info=True)
+        return None
+
+
+def _emit_voice_transcript(text: str) -> None:
+    _publish_live_overlay_caption(text, final=True)
+    _voice_emit("voice.transcript", {"text": text})
+
+
 def _streaming_stt_submit_cfg() -> dict:
     streaming_cfg = _streaming_stt_cfg_dict()
     submit_cfg = streaming_cfg.get("submit")
@@ -9414,7 +9446,7 @@ def _commit_pending_streaming_stt_submit() -> None:
     if not text:
         return
     logger.info("voice streaming STT pending submit committed: chars=%d text=%r", len(text), text)
-    _voice_emit("voice.transcript", {"text": text})
+    _emit_voice_transcript(text)
 
 
 def _cancel_pending_streaming_stt_submit_locked() -> bool:
@@ -9524,7 +9556,7 @@ def _flush_streaming_stt_submit_buffer(*, force: bool = False) -> None:
     )
     commit_delay_ms = submit_cfg["commit_delay_ms"]
     if force or commit_delay_ms <= 0:
-        _voice_emit("voice.transcript", {"text": text})
+        _emit_voice_transcript(text)
         return
 
     with _streaming_stt_submit_lock:
@@ -9580,6 +9612,7 @@ def _queue_streaming_stt_final(text: str, *, speech_final: bool = False) -> None
 
 def _handle_streaming_stt_partial(text: str) -> None:
     """Emit partial captions and treat them as speech activity for debounce."""
+    _publish_live_overlay_caption(text, final=False)
     _voice_emit("voice.partial_transcript", {"text": text})
     submit_cfg = _streaming_stt_submit_cfg()
     with _streaming_stt_submit_lock:
@@ -9617,7 +9650,7 @@ def _cancel_streaming_stt_submit_buffer(*, flush: bool = False) -> None:
             pending_timer.cancel()
     if flush:
         if pending_text:
-            _voice_emit("voice.transcript", {"text": pending_text})
+            _emit_voice_transcript(pending_text)
         _flush_streaming_stt_submit_buffer(force=True)
     else:
         with _streaming_stt_submit_lock:
@@ -9704,6 +9737,9 @@ def _(rid, params: dict) -> dict:
             and _streaming_stt_always_on(),
             "tts": _voice_tts_enabled(),
         }
+        overlay_url = _ensure_live_overlay_server()
+        if overlay_url:
+            payload["overlay_url"] = overlay_url
         try:
             from tools.voice_mode import check_voice_requirements
 
@@ -9738,6 +9774,7 @@ def _(rid, params: dict) -> dict:
         # next TUI launch starts with voice OFF instead of auto-REC from a
         # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
+        overlay_url = _ensure_live_overlay_server() if enabled else None
 
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the
@@ -9762,15 +9799,15 @@ def _(rid, params: dict) -> dict:
                 logger.warning("voice streaming STT failed to start from /voice on: %s", e, exc_info=True)
                 return _err(rid, 5025, str(e))
 
-        return _ok(
-            rid,
-            {
-                "enabled": enabled,
-                "record_key": _voice_record_key(),
-                "streaming_always_on": streaming_always_on,
-                "tts": _voice_tts_enabled(),
-            },
-        )
+        payload = {
+            "enabled": enabled,
+            "record_key": _voice_record_key(),
+            "streaming_always_on": streaming_always_on,
+            "tts": _voice_tts_enabled(),
+        }
+        if overlay_url:
+            payload["overlay_url"] = overlay_url
+        return _ok(rid, payload)
 
     if action == "tts":
         if not _voice_mode_enabled():
@@ -9850,7 +9887,7 @@ def _(rid, params: dict) -> dict:
                 else 3.0
             )
             started = start_continuous(
-                on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
+                on_transcript=_emit_voice_transcript,
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}
@@ -9867,7 +9904,7 @@ def _(rid, params: dict) -> dict:
         with _voice_sid_lock:
             _voice_event_sid = params.get("session_id") or _voice_event_sid
 
-        if _streaming_stt_enabled():
+        if _streaming_stt_enabled() and _streaming_stt_is_running():
             _stop_streaming_stt()
             return _ok(rid, {"status": "stopped", "streaming": True})
 

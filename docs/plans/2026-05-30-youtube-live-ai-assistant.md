@@ -304,7 +304,8 @@ TUI の debug line に出す。配信中は常に非表示にする。
 
 現時点の制約:
 
-- partial transcript は OBS overlay にはまだ接続していない。
+- ローカル overlay server は初期実装済み。`live_overlay.enabled: true` で
+  `http://127.0.0.1:8765/overlay` を OBS Browser Source として使える。
 - Deepgram streaming は `always_on: false` では `/voice on` + `Ctrl+B` の
   push-to-talk 操作に接続する。
 - `always_on: true` では `/voice on` で聞き取りを開始し、`/voice off` まで
@@ -564,11 +565,11 @@ stream_assistant:
 - [x] 内容マッチをしない debounce/min_chars ベースの会話ターン終端判定を追加する。
 - [x] 録音 fixture の replay で pending submit の commit/cancel/rebuffer を検証する。
 - [x] TUI runtime に pending submit の commit/cancel/rebuffer path を追加する。
+- [x] partial/final transcript をローカル OBS Browser Source overlay に接続する。
 - [ ] 投機的な hidden/no-tools draft 生成の設計を固める。
 - [ ] 新しい transcript が来たら投機生成を cancel/discard する。
 - [ ] draft を確定するまで TUI/OBS/TTS に出さない commit/reveal path を追加する。
 - [ ] 小さな LLM または hybrid 判定で `backchannel` も選べるようにする。
-- [ ] partial transcript を OBS overlay に接続する。
 
 検証:
 
@@ -579,13 +580,13 @@ stream_assistant:
 
 ### Phase 2: Local Overlay Proof
 
-- ローカル overlay server を追加する。
-- `overlay_*` tools を追加する。
-- Browser Source 用 HTML/CSS を追加する。
-- Hermes tool call から caption と guide panel を表示する。
-- Deepgram partial transcript を `overlay_set_caption` につなぐ。
-- final transcript を `overlay_commit_caption` で確定字幕として表示する。
-- OBS でローカルテストする。
+- [x] ローカル overlay server を追加する。
+- [x] Browser Source 用 HTML/CSS を追加する。
+- [x] Deepgram partial transcript を caption に反映する。
+- [x] final transcript で partial caption を置き換える。
+- [ ] OBS でローカルテストする。
+- [ ] `overlay_*` tools を追加する。
+- [ ] Hermes tool call から caption と guide panel を表示する。
 
 検証:
 

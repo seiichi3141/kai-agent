@@ -1736,6 +1736,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "live_overlay": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "caption": {
+            "max_chars": 160,
+            "partial_ttl_seconds": 2.0,
+            "final_ttl_seconds": 8.0,
+        },
+    },
+
     "voice": {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
