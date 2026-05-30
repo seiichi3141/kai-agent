@@ -400,12 +400,14 @@ def test_tui_assistant_stream_publishes_overlay_caption(monkeypatch):
     )
 
     server._reset_assistant_overlay_caption()
+    server._show_assistant_overlay_thinking()
     server._queue_assistant_overlay_delta("まずは")
     server._queue_assistant_overlay_delta("右へ行きます。")
     server._flush_assistant_overlay_caption()
     server._commit_assistant_overlay_caption("まずは右へ行きます。")
 
     assert captions == [
+        ("考え中", False, "assistant"),
         ("まずは右へ行きます。", False, "assistant"),
         ("まずは右へ行きます。", True, "assistant"),
     ]

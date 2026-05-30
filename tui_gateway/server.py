@@ -5742,6 +5742,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _start_inflight_turn(session, text)
     agent = session["agent"]
     _reset_assistant_overlay_caption()
+    _show_assistant_overlay_thinking()
     _emit("message.start", sid)
 
     def run():
@@ -9357,6 +9358,10 @@ def _reset_assistant_overlay_caption() -> None:
             _assistant_overlay_timer.cancel()
         _assistant_overlay_text = ""
         _assistant_overlay_timer = None
+
+
+def _show_assistant_overlay_thinking() -> None:
+    _publish_live_overlay_caption("考え中", final=False, speaker="assistant")
 
 
 def _flush_assistant_overlay_caption(*, final: bool = False) -> None:

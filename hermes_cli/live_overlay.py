@@ -433,9 +433,10 @@ _OVERLAY_HTML = """<!doctype html>
     }
     #captions {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 2.2vw;
+      grid-template-columns: 1fr;
+      gap: 10px;
       width: 100%;
+      align-self: end;
     }
     .lane {
       display: flex;
@@ -448,9 +449,9 @@ _OVERLAY_HTML = """<!doctype html>
       justify-content: flex-end;
     }
     .captionBox {
-      width: min(720px, 43vw);
-      min-height: 3.1em;
-      padding: 14px 18px 16px;
+      width: min(860px, 76vw);
+      min-height: 2.8em;
+      padding: 12px 16px 14px;
       opacity: 0;
       transform: translateY(14px);
       border: 1px solid var(--box-border);
@@ -458,7 +459,7 @@ _OVERLAY_HTML = """<!doctype html>
       background: linear-gradient(180deg, rgba(12, 20, 28, 0.68), var(--box-bg));
       box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
       color: var(--caption-final);
-      font-size: clamp(20px, 2.05vw, 34px);
+      font-size: clamp(18px, 1.78vw, 30px);
       font-weight: 780;
       letter-spacing: 0;
       line-height: 1.3;
@@ -481,6 +482,14 @@ _OVERLAY_HTML = """<!doctype html>
       text-align: right;
       border-right: 5px solid var(--assistant-accent);
     }
+    .captionBox.thinking .text::after {
+      content: "";
+      display: inline-block;
+      width: 1.2em;
+      margin-left: 0.18em;
+      text-align: left;
+      animation: thinkingDots 1.2s steps(4, end) infinite;
+    }
     .label {
       display: block;
       margin-bottom: 5px;
@@ -494,13 +503,15 @@ _OVERLAY_HTML = """<!doctype html>
     .text {
       display: block;
     }
+    @keyframes thinkingDots {
+      0% { content: ""; }
+      25% { content: "."; }
+      50% { content: ".."; }
+      75%, 100% { content: "..."; }
+    }
     @media (max-width: 780px) {
       body {
         padding: 0 3vw 4vh;
-      }
-      #captions {
-        grid-template-columns: 1fr;
-        gap: 10px;
       }
       .captionBox {
         width: 100%;
@@ -548,7 +559,8 @@ _OVERLAY_HTML = """<!doctype html>
       const text = item.text || '';
       expiresAt[speaker] = Number(item.expires_at || 0) * 1000;
       textEl.textContent = text;
-      box.className = 'captionBox ' + speaker + (text ? ' visible ' + (item.kind || 'partial') : '');
+      const thinking = text === '考え中' ? ' thinking' : '';
+      box.className = 'captionBox ' + speaker + (text ? ' visible ' + (item.kind || 'partial') + thinking : '');
     }
 
     function expireLoop() {
