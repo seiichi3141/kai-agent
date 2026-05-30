@@ -9346,6 +9346,10 @@ def _emit_voice_transcript(text: str) -> None:
     _voice_emit("voice.transcript", {"text": text})
 
 
+def _streaming_stt_caption_text(parts: list[str], current: str = "", *, joiner: str = " ") -> str:
+    return joiner.join(p for p in [*parts, current] if p).strip()
+
+
 def _reset_assistant_overlay_caption() -> None:
     global _assistant_overlay_text, _assistant_overlay_timer
     with _assistant_overlay_lock:
@@ -9641,6 +9645,10 @@ def _queue_streaming_stt_final(text: str, *, speech_final: bool = False) -> None
         if not _streaming_stt_submit_parts:
             _streaming_stt_submit_started_at = time.monotonic()
         _streaming_stt_submit_parts.append(cleaned)
+        caption_text = _streaming_stt_caption_text(
+            _streaming_stt_submit_parts,
+            joiner=submit_cfg["joiner"],
+        )
         _streaming_stt_submit_speech_final = _streaming_stt_submit_speech_final or speech_final
         if _streaming_stt_submit_timer is not None:
             _streaming_stt_submit_timer.cancel()
@@ -9657,28 +9665,38 @@ def _queue_streaming_stt_final(text: str, *, speech_final: bool = False) -> None
     )
     if restored_pending:
         logger.info("voice streaming STT pending submit canceled by final transcript")
+    if caption_text:
+        _publish_live_overlay_caption(caption_text, final=True)
 
 
 def _handle_streaming_stt_partial(text: str) -> None:
     """Emit partial captions and treat them as speech activity for debounce."""
-    _publish_live_overlay_caption(text, final=False)
     _voice_emit("voice.partial_transcript", {"text": text})
     submit_cfg = _streaming_stt_submit_cfg()
+    caption_text = ""
     with _streaming_stt_submit_lock:
         restored_pending = _cancel_pending_streaming_stt_submit_locked()
         if not _streaming_stt_submit_parts:
-            return
-        global _streaming_stt_submit_timer, _streaming_stt_submit_partial_activity_seen
-        _streaming_stt_submit_partial_activity_seen = True
-        if _streaming_stt_submit_timer is not None:
-            _streaming_stt_submit_timer.cancel()
-        delay_ms = submit_cfg["llm_wait_debounce_ms"] if _streaming_stt_submit_llm_wait_seen else submit_cfg["debounce_ms"]
-        delay = delay_ms / 1000
-        _streaming_stt_submit_timer = threading.Timer(delay, _flush_streaming_stt_submit_buffer)
-        _streaming_stt_submit_timer.daemon = True
-        _streaming_stt_submit_timer.start()
+            caption_text = (text or "").strip()
+        else:
+            global _streaming_stt_submit_timer, _streaming_stt_submit_partial_activity_seen
+            caption_text = _streaming_stt_caption_text(
+                _streaming_stt_submit_parts,
+                (text or "").strip(),
+                joiner=submit_cfg["joiner"],
+            )
+            _streaming_stt_submit_partial_activity_seen = True
+            if _streaming_stt_submit_timer is not None:
+                _streaming_stt_submit_timer.cancel()
+            delay_ms = submit_cfg["llm_wait_debounce_ms"] if _streaming_stt_submit_llm_wait_seen else submit_cfg["debounce_ms"]
+            delay = delay_ms / 1000
+            _streaming_stt_submit_timer = threading.Timer(delay, _flush_streaming_stt_submit_buffer)
+            _streaming_stt_submit_timer.daemon = True
+            _streaming_stt_submit_timer.start()
     if restored_pending:
         logger.info("voice streaming STT pending submit canceled by partial transcript")
+    if caption_text:
+        _publish_live_overlay_caption(caption_text, final=False)
     logger.debug("voice streaming STT partial extended submit debounce")
 
 

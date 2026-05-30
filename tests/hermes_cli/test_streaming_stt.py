@@ -310,18 +310,68 @@ def test_tui_streaming_stt_publishes_partial_and_final_overlay_captions(monkeypa
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
-    server._queue_streaming_stt_final("ボス戦に入ります。", speech_final=True)
-    server._handle_streaming_stt_partial("ボス戦に入ります")
+    server._handle_streaming_stt_partial("ボス戦")
+    server._queue_streaming_stt_final("ボス戦に入ります。")
+    server._handle_streaming_stt_partial("次に右へ")
+    server._queue_streaming_stt_final("次に右へ進みます。", speech_final=True)
     server._cancel_streaming_stt_submit_buffer(flush=True)
 
     assert captions == [
-        ("ボス戦に入ります", False),
+        ("ボス戦", False),
         ("ボス戦に入ります。", True),
+        ("ボス戦に入ります。 次に右へ", False),
+        ("ボス戦に入ります。 次に右へ進みます。", True),
+        ("ボス戦に入ります。 次に右へ進みます。", True),
     ]
     assert emitted == [
-        ("voice.partial_transcript", {"text": "ボス戦に入ります"}),
-        ("voice.transcript", {"text": "ボス戦に入ります。"}),
+        ("voice.partial_transcript", {"text": "ボス戦"}),
+        ("voice.partial_transcript", {"text": "次に右へ"}),
+        (
+            "voice.transcript",
+            {"text": "ボス戦に入ります。 次に右へ進みます。"},
+        ),
     ]
+    server._cancel_streaming_stt_submit_buffer(flush=False)
+
+
+def test_tui_streaming_stt_partial_caption_includes_pending_submit(monkeypatch):
+    from tui_gateway import server
+
+    captions = []
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "streaming_stt": {
+                "enabled": True,
+                "provider": "deepgram",
+                "submit": {
+                    "debounce_ms": 999999,
+                    "commit_delay_ms": 1000,
+                    "min_chars": 8,
+                    "joiner": " ",
+                    "max_wait_ms": 6000,
+                },
+            },
+            "live_overlay": {"enabled": True},
+        },
+    )
+    monkeypatch.setattr(server, "_voice_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_publish_live_overlay_caption",
+        lambda text, *, final: captions.append((text, final)),
+    )
+    server._cancel_streaming_stt_submit_buffer(flush=False)
+
+    server._queue_streaming_stt_final("次の行動は右に行くべきか。")
+    server._flush_streaming_stt_submit_buffer()
+    server._handle_streaming_stt_partial("まだ答えないで")
+
+    assert captions[-1] == (
+        "次の行動は右に行くべきか。 まだ答えないで",
+        False,
+    )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
 
