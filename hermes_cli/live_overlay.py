@@ -38,25 +38,46 @@ class LiveOverlayState:
     def __init__(self, *, caption_max_chars: int = 160) -> None:
         self._caption_max_chars = max(1, int(caption_max_chars))
         self._lock = threading.Lock()
-        self._caption: dict[str, Any] = {
-            "text": "",
-            "kind": "clear",
-            "updated_at": 0.0,
-            "expires_at": 0.0,
+        self._captions: dict[str, dict[str, Any]] = {
+            "host": self._empty_caption(),
+            "assistant": self._empty_caption(),
         }
         self._subscribers: list[queue.Queue[dict[str, Any]]] = []
 
-    def publish_caption(self, text: str, *, final: bool, ttl_seconds: float) -> dict[str, Any]:
+    @staticmethod
+    def _empty_caption(*, updated_at: float = 0.0) -> dict[str, Any]:
+        return {
+            "text": "",
+            "kind": "clear",
+            "updated_at": updated_at,
+            "expires_at": 0.0,
+            "speaker": "",
+        }
+
+    @staticmethod
+    def _speaker(value: str) -> str:
+        return "assistant" if str(value or "").strip().lower() == "assistant" else "host"
+
+    def publish_caption(
+        self,
+        text: str,
+        *,
+        final: bool,
+        ttl_seconds: float,
+        speaker: str = "host",
+    ) -> dict[str, Any]:
         cleaned = self._clean_text(text)
         now = time.time()
+        caption_speaker = self._speaker(speaker)
         state = {
             "text": cleaned,
             "kind": "final" if final else "partial",
             "updated_at": now,
             "expires_at": now + max(0.1, float(ttl_seconds)),
+            "speaker": caption_speaker,
         }
         with self._lock:
-            self._caption = state
+            self._captions[caption_speaker] = state
             snapshot = self.snapshot_locked(now=now)
             subscribers = list(self._subscribers)
         self._broadcast(subscribers, snapshot)
@@ -66,12 +87,10 @@ class LiveOverlayState:
         now = time.time()
         with self._lock:
             if kind in {"caption", "all"}:
-                self._caption = {
-                    "text": "",
-                    "kind": "clear",
-                    "updated_at": now,
-                    "expires_at": 0.0,
-                }
+                self._captions["host"] = self._empty_caption(updated_at=now)
+                self._captions["assistant"] = self._empty_caption(updated_at=now)
+            elif kind in {"host", "assistant"}:
+                self._captions[kind] = self._empty_caption(updated_at=now)
             snapshot = self.snapshot_locked(now=now)
             subscribers = list(self._subscribers)
         self._broadcast(subscribers, snapshot)
@@ -82,18 +101,21 @@ class LiveOverlayState:
             return self.snapshot_locked(now=time.time())
 
     def snapshot_locked(self, *, now: float) -> dict[str, Any]:
-        caption = dict(self._caption)
-        if caption.get("expires_at", 0) and caption["expires_at"] <= now:
-            caption = {
-                "text": "",
-                "kind": "clear",
-                "updated_at": caption.get("updated_at", 0.0),
-                "expires_at": 0.0,
-            }
+        captions = {
+            "host": self._active_caption("host", now=now),
+            "assistant": self._active_caption("assistant", now=now),
+        }
         return {
-            "caption": caption,
+            "caption": captions["host"],
+            "captions": captions,
             "server_time": now,
         }
+
+    def _active_caption(self, speaker: str, *, now: float) -> dict[str, Any]:
+        caption = dict(self._captions.get(speaker) or self._empty_caption())
+        if caption.get("expires_at", 0) and caption["expires_at"] <= now:
+            return self._empty_caption(updated_at=caption.get("updated_at", 0.0))
+        return caption
 
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
         subscriber: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=16)
@@ -189,9 +211,9 @@ class LiveOverlayServer:
         if thread is not None:
             thread.join(timeout=2)
 
-    def publish_caption(self, text: str, *, final: bool) -> dict[str, Any]:
+    def publish_caption(self, text: str, *, final: bool, speaker: str = "host") -> dict[str, Any]:
         ttl = self.config.final_ttl_seconds if final else self.config.partial_ttl_seconds
-        return self.state.publish_caption(text, final=final, ttl_seconds=ttl)
+        return self.state.publish_caption(text, final=final, ttl_seconds=ttl, speaker=speaker)
 
 
 def load_live_overlay_config(config: dict | None) -> LiveOverlayConfig:
@@ -264,11 +286,11 @@ def ensure_live_overlay_server(config: dict | None) -> LiveOverlayServer | None:
         return server
 
 
-def publish_caption(config: dict | None, text: str, *, final: bool) -> dict[str, Any] | None:
+def publish_caption(config: dict | None, text: str, *, final: bool, speaker: str = "host") -> dict[str, Any] | None:
     server = ensure_live_overlay_server(config)
     if server is None:
         return None
-    return server.publish_caption(text, final=final)
+    return server.publish_caption(text, final=final, speaker=speaker)
 
 
 def stop_live_overlay_server() -> None:
@@ -308,7 +330,13 @@ def _make_handler():
             if path == "/api/caption":
                 text = str(payload.get("text") or "")
                 final = bool(payload.get("final"))
-                ttl = self.server.overlay_state.publish_caption(text, final=final, ttl_seconds=8.0 if final else 2.0)
+                speaker = str(payload.get("speaker") or "host")
+                ttl = self.server.overlay_state.publish_caption(
+                    text,
+                    final=final,
+                    ttl_seconds=8.0 if final else 2.0,
+                    speaker=speaker,
+                )
                 self._send_json(ttl)
             elif path == "/api/clear":
                 self._send_json(self.server.overlay_state.clear(str(payload.get("kind") or "caption")))
@@ -382,8 +410,11 @@ _OVERLAY_HTML = """<!doctype html>
   <style>
     :root {
       --caption-final: #f5fbff;
-      --caption-partial: #c8d2dc;
-      --accent: #00d6a3;
+      --caption-muted: #d7e0e8;
+      --host-accent: #00d6a3;
+      --assistant-accent: #7cc7ff;
+      --box-bg: rgba(8, 13, 18, 0.58);
+      --box-border: rgba(245, 251, 255, 0.18);
       --shadow: rgba(0, 0, 0, 0.86);
     }
     * { box-sizing: border-box; }
@@ -396,59 +427,139 @@ _OVERLAY_HTML = """<!doctype html>
       font-family: "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
     }
     body {
-      display: flex;
-      align-items: flex-end;
-      justify-content: center;
-      padding: 0 4.5vw 7.5vh;
+      display: grid;
+      align-items: end;
+      padding: 0 4vw 6vh;
     }
-    #caption {
-      max-width: min(1500px, 92vw);
-      min-height: 1.4em;
+    #captions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 2.2vw;
+      width: 100%;
+    }
+    .lane {
+      display: flex;
+      min-width: 0;
+    }
+    .lane.host {
+      justify-content: flex-start;
+    }
+    .lane.assistant {
+      justify-content: flex-end;
+    }
+    .captionBox {
+      width: min(720px, 43vw);
+      min-height: 3.1em;
+      padding: 14px 18px 16px;
       opacity: 0;
       transform: translateY(14px);
+      border: 1px solid var(--box-border);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(12, 20, 28, 0.68), var(--box-bg));
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
       color: var(--caption-final);
-      font-size: clamp(28px, 3.1vw, 56px);
-      font-weight: 800;
+      font-size: clamp(20px, 2.05vw, 34px);
+      font-weight: 780;
       letter-spacing: 0;
-      line-height: 1.34;
-      text-align: center;
-      text-wrap: balance;
+      line-height: 1.3;
       overflow-wrap: anywhere;
       text-shadow:
-        0 3px 2px var(--shadow),
-        0 0 18px rgba(0, 0, 0, 0.72),
+        0 2px 2px var(--shadow),
+        0 0 14px rgba(0, 0, 0, 0.64),
         0 0 3px rgba(0, 0, 0, 0.95);
-      transition: opacity 120ms ease, transform 160ms ease, color 120ms ease;
+      transition: opacity 120ms ease, transform 160ms ease;
     }
-    #caption.visible {
+    .captionBox.visible {
       opacity: 1;
       transform: translateY(0);
     }
-    #caption.partial,
-    #caption.final {
-      color: var(--caption-final);
+    .captionBox.host {
+      text-align: left;
+      border-left: 5px solid var(--host-accent);
+    }
+    .captionBox.assistant {
+      text-align: right;
+      border-right: 5px solid var(--assistant-accent);
+    }
+    .label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--caption-muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      line-height: 1;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+    }
+    .text {
+      display: block;
+    }
+    @media (max-width: 780px) {
+      body {
+        padding: 0 3vw 4vh;
+      }
+      #captions {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .captionBox {
+        width: 100%;
+      }
+      .captionBox.assistant {
+        text-align: left;
+        border-left: 5px solid var(--assistant-accent);
+        border-right-width: 1px;
+      }
     }
   </style>
 </head>
 <body>
-  <div id="caption" aria-live="polite"></div>
+  <div id="captions">
+    <div class="lane host">
+      <div id="caption-host" class="captionBox host" aria-live="polite">
+        <span class="label">実況者</span>
+        <span class="text"></span>
+      </div>
+    </div>
+    <div class="lane assistant">
+      <div id="caption-assistant" class="captionBox assistant" aria-live="polite">
+        <span class="label">AIアシスタント</span>
+        <span class="text"></span>
+      </div>
+    </div>
+  </div>
   <script>
-    const caption = document.getElementById('caption');
-    let expiresAt = 0;
+    const boxes = {
+      host: document.getElementById('caption-host'),
+      assistant: document.getElementById('caption-assistant')
+    };
+    const expiresAt = { host: 0, assistant: 0 };
 
     function applyState(state) {
-      const item = state && state.caption ? state.caption : {};
+      const captions = state && state.captions ? state.captions : { host: state && state.caption ? state.caption : {} };
+      applyCaption('host', captions.host || {});
+      applyCaption('assistant', captions.assistant || {});
+    }
+
+    function applyCaption(speaker, item) {
+      const box = boxes[speaker];
+      if (!box) return;
+      const textEl = box.querySelector('.text');
       const text = item.text || '';
-      expiresAt = Number(item.expires_at || 0) * 1000;
-      caption.textContent = text;
-      caption.className = text ? 'visible ' + (item.kind || 'partial') : '';
+      expiresAt[speaker] = Number(item.expires_at || 0) * 1000;
+      textEl.textContent = text;
+      box.className = 'captionBox ' + speaker + (text ? ' visible ' + (item.kind || 'partial') : '');
     }
 
     function expireLoop() {
-      if (expiresAt && Date.now() > expiresAt) {
-        caption.textContent = '';
-        caption.className = '';
-        expiresAt = 0;
+      const now = Date.now();
+      for (const speaker of Object.keys(boxes)) {
+        if (expiresAt[speaker] && now > expiresAt[speaker]) {
+          const box = boxes[speaker];
+          box.querySelector('.text').textContent = '';
+          box.className = 'captionBox ' + speaker;
+          expiresAt[speaker] = 0;
+        }
       }
       requestAnimationFrame(expireLoop);
     }

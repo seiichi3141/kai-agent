@@ -9319,12 +9319,12 @@ def _streaming_stt_is_running() -> bool:
         return _streaming_stt_session is not None and _streaming_stt_session.is_running()
 
 
-def _publish_live_overlay_caption(text: str, *, final: bool) -> None:
+def _publish_live_overlay_caption(text: str, *, final: bool, speaker: str = "host") -> None:
     cfg = _load_cfg()
     try:
         from hermes_cli.live_overlay import publish_caption
 
-        publish_caption(cfg if isinstance(cfg, dict) else {}, text, final=final)
+        publish_caption(cfg if isinstance(cfg, dict) else {}, text, final=final, speaker=speaker)
     except Exception as exc:
         logger.debug("live overlay caption publish failed: %s", exc, exc_info=True)
 
@@ -9365,7 +9365,7 @@ def _flush_assistant_overlay_caption(*, final: bool = False) -> None:
         text = _assistant_overlay_text.strip()
         _assistant_overlay_timer = None
     if text:
-        _publish_live_overlay_caption(text, final=final)
+        _publish_live_overlay_caption(text, final=final, speaker="assistant")
 
 
 def _queue_assistant_overlay_delta(delta: str) -> None:
@@ -9390,7 +9390,7 @@ def _commit_assistant_overlay_caption(text: str) -> None:
         _assistant_overlay_timer = None
         _assistant_overlay_text = cleaned
     if cleaned:
-        _publish_live_overlay_caption(cleaned, final=True)
+        _publish_live_overlay_caption(cleaned, final=True, speaker="assistant")
 
 
 def _streaming_stt_submit_cfg() -> dict:

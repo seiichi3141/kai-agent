@@ -306,7 +306,7 @@ def test_tui_streaming_stt_publishes_partial_and_final_overlay_captions(monkeypa
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final: captions.append((text, final)),
+        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
@@ -317,11 +317,11 @@ def test_tui_streaming_stt_publishes_partial_and_final_overlay_captions(monkeypa
     server._cancel_streaming_stt_submit_buffer(flush=True)
 
     assert captions == [
-        ("ボス戦", False),
-        ("ボス戦に入ります。", True),
-        ("ボス戦に入ります。 次に右へ", False),
-        ("ボス戦に入ります。 次に右へ進みます。", True),
-        ("ボス戦に入ります。 次に右へ進みます。", True),
+        ("ボス戦", False, "host"),
+        ("ボス戦に入ります。", True, "host"),
+        ("ボス戦に入ります。 次に右へ", False, "host"),
+        ("ボス戦に入ります。 次に右へ進みます。", True, "host"),
+        ("ボス戦に入ります。 次に右へ進みます。", True, "host"),
     ]
     assert emitted == [
         ("voice.partial_transcript", {"text": "ボス戦"}),
@@ -360,7 +360,7 @@ def test_tui_streaming_stt_partial_caption_includes_pending_submit(monkeypatch):
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final: captions.append((text, final)),
+        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
@@ -371,6 +371,7 @@ def test_tui_streaming_stt_partial_caption_includes_pending_submit(monkeypatch):
     assert captions[-1] == (
         "次の行動は右に行くべきか。 まだ答えないで",
         False,
+        "host",
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
@@ -395,7 +396,7 @@ def test_tui_assistant_stream_publishes_overlay_caption(monkeypatch):
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final: captions.append((text, final)),
+        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
     )
 
     server._reset_assistant_overlay_caption()
@@ -405,8 +406,8 @@ def test_tui_assistant_stream_publishes_overlay_caption(monkeypatch):
     server._commit_assistant_overlay_caption("まずは右へ行きます。")
 
     assert captions == [
-        ("まずは右へ行きます。", False),
-        ("まずは右へ行きます。", True),
+        ("まずは右へ行きます。", False, "assistant"),
+        ("まずは右へ行きます。", True, "assistant"),
     ]
     server._reset_assistant_overlay_caption()
 

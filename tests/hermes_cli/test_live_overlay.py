@@ -39,11 +39,24 @@ def test_live_overlay_state_cleans_truncates_and_expires_caption():
     snapshot = state.publish_caption("  abc\n\r\tdef\x00ghi  ", final=False, ttl_seconds=0.1)
 
     assert snapshot["caption"]["text"] == "c defghi"
+    assert snapshot["captions"]["host"]["text"] == "c defghi"
     assert snapshot["caption"]["kind"] == "partial"
 
     time.sleep(0.12)
 
-    assert state.snapshot()["caption"]["text"] == ""
+    assert state.snapshot()["captions"]["host"]["text"] == ""
+
+
+def test_live_overlay_state_keeps_host_and_assistant_lanes_separate():
+    state = LiveOverlayState(caption_max_chars=80)
+
+    snapshot = state.publish_caption("実況者の字幕", final=False, ttl_seconds=3, speaker="host")
+    snapshot = state.publish_caption("AIの字幕", final=True, ttl_seconds=3, speaker="assistant")
+
+    assert snapshot["captions"]["host"]["text"] == "実況者の字幕"
+    assert snapshot["captions"]["host"]["speaker"] == "host"
+    assert snapshot["captions"]["assistant"]["text"] == "AIの字幕"
+    assert snapshot["captions"]["assistant"]["speaker"] == "assistant"
 
 
 def test_live_overlay_http_serves_overlay_and_state():
@@ -59,5 +72,5 @@ def test_live_overlay_http_serves_overlay_and_state():
         server.stop()
 
     assert "Hermes Live Overlay" in html
-    assert state["caption"]["text"] == "ボス戦に入ります。"
-    assert state["caption"]["kind"] == "final"
+    assert state["captions"]["host"]["text"] == "ボス戦に入ります。"
+    assert state["captions"]["host"]["kind"] == "final"
