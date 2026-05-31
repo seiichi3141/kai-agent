@@ -211,8 +211,19 @@ class LiveOverlayServer:
         if thread is not None:
             thread.join(timeout=2)
 
-    def publish_caption(self, text: str, *, final: bool, speaker: str = "host") -> dict[str, Any]:
-        ttl = self.config.final_ttl_seconds if final else self.config.partial_ttl_seconds
+    def publish_caption(
+        self,
+        text: str,
+        *,
+        final: bool,
+        speaker: str = "host",
+        ttl_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        ttl = (
+            float(ttl_seconds)
+            if ttl_seconds is not None
+            else self.config.final_ttl_seconds if final else self.config.partial_ttl_seconds
+        )
         return self.state.publish_caption(text, final=final, ttl_seconds=ttl, speaker=speaker)
 
 
@@ -286,11 +297,18 @@ def ensure_live_overlay_server(config: dict | None) -> LiveOverlayServer | None:
         return server
 
 
-def publish_caption(config: dict | None, text: str, *, final: bool, speaker: str = "host") -> dict[str, Any] | None:
+def publish_caption(
+    config: dict | None,
+    text: str,
+    *,
+    final: bool,
+    speaker: str = "host",
+    ttl_seconds: float | None = None,
+) -> dict[str, Any] | None:
     server = ensure_live_overlay_server(config)
     if server is None:
         return None
-    return server.publish_caption(text, final=final, speaker=speaker)
+    return server.publish_caption(text, final=final, speaker=speaker, ttl_seconds=ttl_seconds)
 
 
 def stop_live_overlay_server() -> None:

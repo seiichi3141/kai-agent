@@ -5750,6 +5750,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        streaming_tts_worker = None
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -5774,6 +5775,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            if _voice_tts_enabled() and _fish_audio_streaming_tts_enabled():
+                try:
+                    from hermes_cli.streaming_tts import FishAudioStreamingTTSWorker
+
+                    streaming_tts_worker = FishAudioStreamingTTSWorker()
+                    streaming_tts_worker.start()
+                    logger.info("voice Fish Audio streaming TTS worker started")
+                except Exception as exc:
+                    streaming_tts_worker = None
+                    logger.warning("voice Fish Audio streaming TTS unavailable: %s", exc, exc_info=True)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -5867,6 +5878,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
                 _queue_assistant_overlay_delta(delta)
+                if streaming_tts_worker is not None:
+                    streaming_tts_worker.feed(_plain_voice_caption_text(delta))
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
@@ -5955,7 +5968,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            _commit_assistant_overlay_caption(raw)
+            if streaming_tts_worker is not None:
+                _commit_assistant_overlay_caption(raw, ttl_seconds=600.0)
+                streaming_tts_worker.finish(wait=False)
+                threading.Thread(
+                    target=_log_streaming_tts_worker_result,
+                    args=(streaming_tts_worker,),
+                    daemon=True,
+                ).start()
+            else:
+                _commit_assistant_overlay_caption(raw)
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
@@ -6056,6 +6078,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 and isinstance(raw, str)
                 and raw.strip()
                 and _voice_tts_enabled()
+                and streaming_tts_worker is None
             ):
                 try:
                     from hermes_cli.voice import speak_text
@@ -6071,6 +6094,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         except Exception as e:
             import traceback
 
+            if streaming_tts_worker is not None:
+                try:
+                    streaming_tts_worker.cancel()
+                except Exception:
+                    pass
             trace = traceback.format_exc()
             try:
                 os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
@@ -9271,6 +9299,51 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _fish_audio_streaming_tts_enabled() -> bool:
+    cfg = _load_cfg()
+    tts_cfg = cfg.get("tts") if isinstance(cfg, dict) else None
+    if not isinstance(tts_cfg, dict):
+        return False
+    provider = str(tts_cfg.get("provider") or "").strip().lower()
+    if provider not in {"fish_audio", "fish", "fishaudio", "fish-audio"}:
+        return False
+    fish_cfg = tts_cfg.get("fish_audio")
+    if not isinstance(fish_cfg, dict):
+        return False
+    return bool(fish_cfg.get("streaming_enabled"))
+
+
+def _log_streaming_tts_worker_result(worker: Any) -> None:
+    try:
+        config = getattr(worker, "config", None)
+        wait_timeout = max(
+            30.0,
+            float(getattr(config, "playback_drain_timeout_seconds", 180.0) or 180.0) + 10.0,
+        )
+        done = worker.wait(timeout=wait_timeout)
+        if not done:
+            logger.warning("voice Fish Audio streaming TTS did not finish within timeout")
+            return
+        if getattr(worker, "error", None) is not None:
+            logger.warning("voice Fish Audio streaming TTS failed: %s", worker.error)
+            return
+        result = getattr(worker, "result", None)
+        if result is not None:
+            logger.info(
+                "voice Fish Audio streaming TTS complete: first_audio_ms=%s chunks=%s bytes=%s elapsed_ms=%s",
+                getattr(result, "first_audio_ms", None),
+                getattr(result, "chunks", None),
+                getattr(result, "audio_bytes", None),
+                getattr(result, "elapsed_ms", None),
+            )
+        with _assistant_overlay_lock:
+            caption = _assistant_overlay_text.strip()
+        if caption:
+            _publish_live_overlay_caption(caption, final=True, speaker="assistant")
+    except Exception as exc:
+        logger.debug("voice Fish Audio streaming TTS result logging failed: %s", exc, exc_info=True)
+
+
 def _voice_cfg_dict() -> dict:
     """Shape-safe accessor for the ``voice:`` block in config.yaml.
 
@@ -9320,12 +9393,24 @@ def _streaming_stt_is_running() -> bool:
         return _streaming_stt_session is not None and _streaming_stt_session.is_running()
 
 
-def _publish_live_overlay_caption(text: str, *, final: bool, speaker: str = "host") -> None:
+def _publish_live_overlay_caption(
+    text: str,
+    *,
+    final: bool,
+    speaker: str = "host",
+    ttl_seconds: float | None = None,
+) -> None:
     cfg = _load_cfg()
     try:
         from hermes_cli.live_overlay import publish_caption
 
-        publish_caption(cfg if isinstance(cfg, dict) else {}, text, final=final, speaker=speaker)
+        publish_caption(
+            cfg if isinstance(cfg, dict) else {},
+            text,
+            final=final,
+            speaker=speaker,
+            ttl_seconds=ttl_seconds,
+        )
     except Exception as exc:
         logger.debug("live overlay caption publish failed: %s", exc, exc_info=True)
 
@@ -9351,6 +9436,15 @@ def _streaming_stt_caption_text(parts: list[str], current: str = "", *, joiner: 
     return joiner.join(p for p in [*parts, current] if p).strip()
 
 
+def _plain_voice_caption_text(text: str) -> str:
+    try:
+        from tools.tts_tool import _strip_markdown_for_tts
+
+        return _strip_markdown_for_tts(str(text or "")).strip()
+    except Exception:
+        return str(text or "").strip()
+
+
 def _reset_assistant_overlay_caption() -> None:
     global _assistant_overlay_text, _assistant_overlay_timer
     with _assistant_overlay_lock:
@@ -9367,7 +9461,7 @@ def _show_assistant_overlay_thinking() -> None:
 def _flush_assistant_overlay_caption(*, final: bool = False) -> None:
     global _assistant_overlay_timer
     with _assistant_overlay_lock:
-        text = _assistant_overlay_text.strip()
+        text = _plain_voice_caption_text(_assistant_overlay_text)
         _assistant_overlay_timer = None
     if text:
         _publish_live_overlay_caption(text, final=final, speaker="assistant")
@@ -9386,16 +9480,21 @@ def _queue_assistant_overlay_delta(delta: str) -> None:
         _assistant_overlay_timer.start()
 
 
-def _commit_assistant_overlay_caption(text: str) -> None:
+def _commit_assistant_overlay_caption(text: str, *, ttl_seconds: float | None = None) -> None:
     global _assistant_overlay_text, _assistant_overlay_timer
-    cleaned = str(text or "").strip()
+    cleaned = _plain_voice_caption_text(text)
     with _assistant_overlay_lock:
         if _assistant_overlay_timer is not None:
             _assistant_overlay_timer.cancel()
         _assistant_overlay_timer = None
         _assistant_overlay_text = cleaned
     if cleaned:
-        _publish_live_overlay_caption(cleaned, final=True, speaker="assistant")
+        _publish_live_overlay_caption(
+            cleaned,
+            final=True,
+            speaker="assistant",
+            ttl_seconds=ttl_seconds,
+        )
 
 
 def _streaming_stt_submit_cfg() -> dict:

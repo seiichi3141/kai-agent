@@ -59,6 +59,22 @@ def test_live_overlay_state_keeps_host_and_assistant_lanes_separate():
     assert snapshot["captions"]["assistant"]["speaker"] == "assistant"
 
 
+def test_live_overlay_server_publish_caption_accepts_ttl_override():
+    config = LiveOverlayConfig(enabled=True, final_ttl_seconds=8)
+    server = LiveOverlayServer(config)
+
+    before = time.time()
+    snapshot = server.publish_caption(
+        "長いアシスタント字幕",
+        final=True,
+        speaker="assistant",
+        ttl_seconds=120,
+    )
+
+    expires_at = snapshot["captions"]["assistant"]["expires_at"]
+    assert expires_at >= before + 119
+
+
 def test_live_overlay_http_serves_overlay_and_state():
     server = LiveOverlayServer(LiveOverlayConfig(enabled=True, port=0))
     server.start()

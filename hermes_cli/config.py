@@ -1667,6 +1667,9 @@ DEFAULT_CONFIG = {
             "sample_rate": 44100,
             "mp3_bitrate": 128,
             "latency": "normal",  # low | balanced | normal
+            "streaming_enabled": False,
+            "stream_url": "wss://api.fish.audio/v1/tts/live",
+            "stream_playback_drain_timeout_seconds": 180,
             "temperature": 0.7,
             "top_p": 0.7,
             "speed": 1.0,

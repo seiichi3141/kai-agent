@@ -306,7 +306,7 @@ def test_tui_streaming_stt_publishes_partial_and_final_overlay_captions(monkeypa
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
+        lambda text, *, final, speaker="host", ttl_seconds=None: captions.append((text, final, speaker)),
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
@@ -360,7 +360,7 @@ def test_tui_streaming_stt_partial_caption_includes_pending_submit(monkeypatch):
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
+        lambda text, *, final, speaker="host", ttl_seconds=None: captions.append((text, final, speaker)),
     )
     server._cancel_streaming_stt_submit_buffer(flush=False)
 
@@ -396,15 +396,15 @@ def test_tui_assistant_stream_publishes_overlay_caption(monkeypatch):
     monkeypatch.setattr(
         server,
         "_publish_live_overlay_caption",
-        lambda text, *, final, speaker="host": captions.append((text, final, speaker)),
+        lambda text, *, final, speaker="host", ttl_seconds=None: captions.append((text, final, speaker)),
     )
 
     server._reset_assistant_overlay_caption()
     server._show_assistant_overlay_thinking()
-    server._queue_assistant_overlay_delta("まずは")
-    server._queue_assistant_overlay_delta("右へ行きます。")
+    server._queue_assistant_overlay_delta("**まずは**")
+    server._queue_assistant_overlay_delta("`右`へ行きます。")
     server._flush_assistant_overlay_caption()
-    server._commit_assistant_overlay_caption("まずは右へ行きます。")
+    server._commit_assistant_overlay_caption("**まずは**`右`へ行きます。")
 
     assert captions == [
         ("考え中", False, "assistant"),
