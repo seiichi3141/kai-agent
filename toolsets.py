@@ -157,6 +157,15 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "live_coding": {
+        "description": (
+            "Live-coding stream tools: delegate focused coding tasks to Codex CLI "
+            "and publish progress to the OBS overlay"
+        ),
+        "tools": ["live_coding_delegate"],
+        "includes": []
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",

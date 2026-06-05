@@ -6,14 +6,21 @@
 
 ## 目的
 
-YouTube のゲーム実況ライブ配信で使う Hermes ベースの AI アシスタントを作る。
+YouTube のゲーム実況ライブ配信と、モバイルアプリ開発のライブコーディング配信で使う
+Hermes ベースの AI アシスタントを作る。
 
 目標は、配信者と音声で会話できる共同司会者のような体験である。配信者の発話を
 聞き取り、YouTube ライブチャットを読み、必要に応じて TTS で話し、OBS オーバー
-レイに字幕・攻略メモ・ガイド情報を表示できるようにする。
+レイに字幕・攻略メモ・ガイド情報・開発状況を表示できるようにする。
 
 重要な前提として、アシスタントの音声は配信にも乗せる。配信者とアシスタントの
 掛け合い自体をコンテンツにする。
+
+配信モードは少なくとも 2 つに分ける。
+
+- `game`: ゲーム実況向け。攻略補助、雑談、ネタバレ回避、チャット選別を重視する。
+- `live_coding`: モバイルアプリ開発向け。Codex へのコーディング委譲、作業状況の説明、
+  エラー要約、視聴者からの開発質問への反応を重視する。
 
 ## 目標機能
 
@@ -26,6 +33,9 @@ YouTube のゲーム実況ライブ配信で使う Hermes ベースの AI アシ
    明確に振り分ける仕組み。
 7. 選別した YouTube チャットを OBS に表示し、それに対してアシスタントが反応する。
 8. obs-websocket を使った OBS 操作。将来的にはシーン切り替えも行う。
+9. モバイルアプリ開発のライブコーディングで、Codex に実装作業を委譲し、Hermes は
+   進行、音声対話、チャット選別、OBS 表示、安全制御を担当する。
+10. ライブコーディング中の差分、ビルド、テスト、エラー、次の作業を配信向けに要約する。
 
 ## 現状の Hermes で使えるもの
 
@@ -43,6 +53,11 @@ Hermes には、今回の用途に使える部品が既にある。
 - 人格や振る舞いは、skill、personality、channel prompt で表現できる。
 - Web search、browser、memory、skills、file tools は、ゲーム攻略調査や再利用可能な
   ガイドメモに使える。
+- コーディング支援には、Hermes の file tools、terminal、process、browser、skills が使える。
+- `skills/autonomous-ai-agents/codex/SKILL.md` は、Codex CLI へコーディング作業を
+  委譲するための手順を持つ。
+- `skills/autonomous-ai-agents/claude-code/SKILL.md` は、Claude Code CLI へ委譲する
+  手順を持つ。初期方針では Codex を優先し、Claude Code は代替または比較対象にする。
 
 不足しているもの:
 
@@ -53,6 +68,7 @@ Hermes には、今回の用途に使える部品が既にある。
 - 返答を「喋る」「画面に出す」「YouTube チャットに投稿する」「内部だけに留める」
   などへ振り分ける、配信用 response router はまだない。
 - ゲーム実況向け人格・skill はまだない。
+- ライブコーディング向けの配信 persona、Codex 委譲ルール、OBS 表示ルールはまだない。
 
 ## 推奨アーキテクチャ
 
@@ -548,6 +564,84 @@ stream_assistant:
   allow_obs_scene_switching: true
 ```
 
+### 7. Live Coding Assistant Mode
+
+モバイルアプリ開発のライブコーディング配信向けに、`live_coding` mode を追加する。
+初期方針では、実際のコード編集や調査は Codex に委譲し、Hermes は配信中の会話、
+進行管理、チャット選別、OBS 表示、安全制御を担当する。
+
+役割分担:
+
+- Hermes
+  - 配信者の発話を STT で受け取り、開発意図を整理する。
+  - YouTube チャットから有用な質問、バグ指摘、設計相談だけを選別する。
+  - Codex に渡す作業指示を作る。
+  - Codex の進行状況、差分、テスト結果、エラーを配信用に短く説明する。
+  - OBS overlay に現在の作業、選別チャット、エラー要約、次の作業を表示する。
+  - 機密情報、API key、private path、未公開仕様が配信に出ないように抑制する。
+- Codex
+  - コードベース調査、実装、リファクタ、テスト追加、ビルド確認を担当する。
+  - 初期段階では Hermes の terminal/process 経由で `codex exec ...` を使う。
+  - 長い作業は background process として起動し、Hermes がログと完了状態を監視する。
+
+初期の委譲方式:
+
+```text
+配信者の発話 / 選別チャット
+  -> Hermes が作業意図を整理
+  -> Codex 用 prompt を生成
+  -> terminal/process で codex exec を起動
+  -> Codex の出力、git diff、test result を Hermes が要約
+  -> OBS overlay と TTS で配信用に共有
+```
+
+Codex 実行方針:
+
+- まず `codex exec` による one-shot task から始める。
+- 長い作業は `background=true` と `pty=true` で起動し、`process` tool で監視する。
+- 配信中の安全性を優先し、`--yolo` は使わない。
+- 初期設定では、編集・テストは許可してよいが、commit / push / delete / secret 表示は
+  明示承認制にする。
+- `.env`、秘密鍵、token、認証ファイル、未公開の個人情報を Codex の出力や overlay に
+  そのまま出さない。
+
+ライブコーディング用 overlay:
+
+- `current_task`: 今取り組んでいる開発タスク。
+- `active_file`: 説明対象のファイル名。private path は短縮する。
+- `build_status`: idle / running / passed / failed。
+- `test_status`: idle / running / passed / failed。
+- `error_summary`: 配信向けに短くしたエラー原因。
+- `next_step`: 次にやる作業。
+- `selected_chat`: 取り上げる視聴者コメント。
+- `codex_status`: waiting / running / needs_input / done / failed。
+
+ライブコーディング skill の責務:
+
+- 実装の意図を配信者と視聴者に分かる短さで説明する。
+- コード修正そのものは Codex に委譲し、Hermes は勝手に大きな修正をしない。
+- Codex が詰まったときは、エラー要約と選択肢を配信者に返す。
+- 視聴者の指摘をそのまま採用せず、再現性と安全性を確認してから Codex に渡す。
+- 秘密情報や未公開情報が出そうな場合は、TTS と overlay の両方で伏せる。
+
+設定例:
+
+```yaml
+stream_assistant:
+  mode: live_coding
+  coding:
+    delegate_to: codex
+    allow_codex_exec: true
+    allow_file_edits: true
+    require_approval_for_commit: true
+    require_approval_for_push: true
+    require_approval_for_delete: true
+    block_secret_paths: true
+    overlay_show_diff_summary: true
+    overlay_show_error_summary: true
+    tts_max_chars: 180
+```
+
 ## MVP 範囲
 
 最初の有用な MVP では、YouTube platform integration を完全実装する必要はない。
@@ -564,6 +658,7 @@ stream_assistant:
    - `caption.json` または WebSocket state を使う。
    - OBS Browser Source が現在の caption/panel を表示する。
 6. stream assistant skill/persona を追加する。
+7. ライブコーディング mode は、まず Codex への one-shot 委譲と、結果要約 overlay から始める。
 
 この流れで、first-class Hermes plugin にする前に end-to-end loop を検証する。
 
@@ -690,6 +785,41 @@ stream_assistant:
 - source update は明示的で rate limit されている。
 - scene switch は明示的な条件でのみ実行される。
 
+### Phase 8: Live Coding Mode / Codex Delegation
+
+- [x] `stream_assistant.mode: live_coding` を追加する。
+- [x] Codex 委譲用の小さな coordinator を追加する。
+  - [x] Codex prompt を作る。
+  - [x] `codex exec` を起動する。
+  - [ ] background 実行を監視する。
+  - [ ] 結果、差分、テスト結果を要約する。
+- [x] `live_coding_delegate` tool を追加する。
+- [x] `live_coding` toolset を追加する。通常運用に混ざらないよう、core toolset には入れない。
+- `skills/media/live-coding-assistant/SKILL.md` などを追加する。
+- [x] OBS overlay にライブコーディング用 state を追加する。
+  - [x] current task
+  - [x] Codex status
+  - [x] build/test status
+  - [x] error summary
+  - [x] next step
+  - [ ] selected chat
+- [x] 秘密情報フィルタを入れる。
+  - [x] `.env`
+  - [x] API key / token / secret
+  - [x] private path
+  - 未公開仕様
+- 初期版では Codex を primary delegate にし、Claude Code は明示設定時のみ使う。
+- commit / push / delete は常に配信者の明示承認を必要にする。
+
+検証:
+
+- 配信者の音声指示から Codex に one-shot task を渡せる。
+- Codex 実行中に overlay へ `running` 状態が出る。
+- Codex 完了後に、差分とテスト結果を短く説明できる。
+- エラー時に、配信用の短い原因説明と次の選択肢を出せる。
+- 秘密情報が TTS / OBS overlay / YouTube chat に出ない。
+- Codex が入力待ちになった場合、Hermes が配信者に確認を求められる。
+
 ## モデル検討
 
 RX 9070 XT / Windows のローカルテスト:
@@ -722,6 +852,10 @@ RX 9070 XT / Windows のローカルテスト:
 - OBS overlay design では、text wrapping と expiration behavior を慎重に扱う必要がある。
 - public voice output では、危険なチャットを読み上げない安全ルールが必要。
 - scene switch の誤操作は配信事故につながるため、許可条件と cooldown が必要。
+- ライブコーディング中は、秘密情報、private repository 情報、未公開仕様が配信に出るリスクがある。
+- Codex に過度な権限を与えると、意図しない大きな変更、削除、commit、push が起きる可能性がある。
+- Codex の長時間実行は配信テンポを崩すため、進行状況の可視化と中断手段が必要である。
+- 視聴者チャットの指摘を直接実装に反映すると、誤情報や悪意ある誘導を取り込むリスクがある。
 
 ## 未決事項
 
@@ -735,6 +869,11 @@ RX 9070 XT / Windows のローカルテスト:
 - Fish Audio のどの voice / `reference_id` をデフォルトの stream persona にするか。
 - obs-websocket の scene switch をどこまで agent に許可するか。
 - これは core、bundled plugin、別 plugin repo のどこに置くべきか。
+- ライブコーディング mode の Codex 実行は、Hermes の既存 terminal/process だけで始めるか、
+  専用 coordinator tool を作るか。
+- Codex の結果をどこまで自動で overlay に出すか。差分の自動表示は便利だが、秘密情報の
+  accidental leak に注意が必要である。
+- Claude Code も同じ delegate interface に抽象化するか、当面は Codex 専用にするか。
 
 ## 推奨される次の作業
 
@@ -745,5 +884,12 @@ RX 9070 XT / Windows のローカルテスト:
 3. Fish Audio TTS provider。
 4. Stream assistant skill/persona。
 5. ローカルモデル、OBS、Fish Audio TTS、Deepgram captions を使った手動テスト。
+6. ライブコーディング mode の最小実装。
+   - Codex one-shot 委譲。
+   - Codex status overlay。
+   - 差分 / test result / error summary の配信用要約。
+   - 秘密情報フィルタ。
 
 voice/overlay loop の感触が良くなってから、YouTube chat ingestion を追加する。
+ライブコーディング mode は YouTube chat ingestion と独立して進められるため、Codex 委譲と
+overlay 表示の最小ループを先に検証してよい。

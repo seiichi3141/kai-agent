@@ -62,6 +62,23 @@ def test_live_overlay_state_keeps_host_and_assistant_lanes_separate():
     assert snapshot["captions"]["chat"]["speaker"] == "chat"
 
 
+def test_live_overlay_state_tracks_live_coding_status():
+    state = LiveOverlayState(caption_max_chars=40)
+
+    snapshot = state.publish_live_coding(
+        status="running",
+        current_task="ログイン画面を直す",
+        codex_status="running",
+        error_summary="",
+        next_step="Codex の結果確認",
+    )
+
+    assert snapshot["live_coding"]["enabled"] is True
+    assert snapshot["live_coding"]["status"] == "running"
+    assert snapshot["live_coding"]["current_task"] == "ログイン画面を直す"
+    assert snapshot["live_coding"]["codex_status"] == "running"
+
+
 def test_live_overlay_server_publish_caption_accepts_ttl_override():
     config = LiveOverlayConfig(enabled=True, final_ttl_seconds=8)
     server = LiveOverlayServer(config)

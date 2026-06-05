@@ -1820,6 +1820,24 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "stream_assistant": {
+        "mode": "game",  # game | live_coding
+        "coding": {
+            "delegate_to": "codex",
+            "codex_path": "codex",
+            "timeout_seconds": 900,
+            "max_output_chars": 6000,
+            "allow_file_edits": True,
+            "require_approval_for_commit": True,
+            "require_approval_for_push": True,
+            "require_approval_for_delete": True,
+            "block_secret_paths": True,
+            "overlay_show_diff_summary": True,
+            "overlay_show_error_summary": True,
+            "tts_max_chars": 180,
+        },
+    },
+
     "voice": {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,

@@ -43,6 +43,7 @@ class LiveOverlayState:
             "assistant": self._empty_caption(),
             "chat": self._empty_caption(),
         }
+        self._live_coding: dict[str, Any] = self._empty_live_coding_state()
         self._subscribers: list[queue.Queue[dict[str, Any]]] = []
 
     @staticmethod
@@ -53,6 +54,21 @@ class LiveOverlayState:
             "updated_at": updated_at,
             "expires_at": 0.0,
             "speaker": "",
+        }
+
+    @staticmethod
+    def _empty_live_coding_state(*, updated_at: float = 0.0) -> dict[str, Any]:
+        return {
+            "enabled": False,
+            "status": "idle",
+            "current_task": "",
+            "codex_status": "idle",
+            "build_status": "idle",
+            "test_status": "idle",
+            "active_file": "",
+            "error_summary": "",
+            "next_step": "",
+            "updated_at": updated_at,
         }
 
     @staticmethod
@@ -94,8 +110,26 @@ class LiveOverlayState:
                 self._captions["host"] = self._empty_caption(updated_at=now)
                 self._captions["assistant"] = self._empty_caption(updated_at=now)
                 self._captions["chat"] = self._empty_caption(updated_at=now)
+                if kind == "all":
+                    self._live_coding = self._empty_live_coding_state(updated_at=now)
             elif kind in {"host", "assistant", "chat"}:
                 self._captions[kind] = self._empty_caption(updated_at=now)
+            elif kind in {"live_coding", "coding"}:
+                self._live_coding = self._empty_live_coding_state(updated_at=now)
+            snapshot = self.snapshot_locked(now=now)
+            subscribers = list(self._subscribers)
+        self._broadcast(subscribers, snapshot)
+        return snapshot
+
+    def publish_live_coding(self, **fields: Any) -> dict[str, Any]:
+        now = time.time()
+        cleaned = self._clean_live_coding_fields(fields)
+        with self._lock:
+            state = dict(self._live_coding)
+            state.update(cleaned)
+            state["enabled"] = True
+            state["updated_at"] = now
+            self._live_coding = state
             snapshot = self.snapshot_locked(now=now)
             subscribers = list(self._subscribers)
         self._broadcast(subscribers, snapshot)
@@ -114,6 +148,7 @@ class LiveOverlayState:
         return {
             "caption": captions["host"],
             "captions": captions,
+            "live_coding": dict(self._live_coding),
             "server_time": now,
         }
 
@@ -144,6 +179,28 @@ class LiveOverlayState:
         if len(cleaned) <= self._caption_max_chars:
             return cleaned
         return cleaned[-self._caption_max_chars :].lstrip()
+
+    def _clean_live_coding_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "status",
+            "current_task",
+            "codex_status",
+            "build_status",
+            "test_status",
+            "active_file",
+            "error_summary",
+            "next_step",
+        }
+        cleaned: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            text = _CONTROL_CHARS_RE.sub("", str(value or ""))
+            text = _WHITESPACE_RE.sub(" ", text).strip()
+            if len(text) > self._caption_max_chars:
+                text = text[: self._caption_max_chars].rstrip()
+            cleaned[key] = text
+        return cleaned
 
     @staticmethod
     def _safe_put(subscriber: queue.Queue[dict[str, Any]], payload: dict[str, Any]) -> None:
@@ -232,6 +289,9 @@ class LiveOverlayServer:
         )
         return self.state.publish_caption(text, final=final, ttl_seconds=ttl, speaker=speaker)
 
+    def publish_live_coding(self, **fields: Any) -> dict[str, Any]:
+        return self.state.publish_live_coding(**fields)
+
 
 def load_live_overlay_config(config: dict | None) -> LiveOverlayConfig:
     root = config if isinstance(config, dict) else {}
@@ -315,6 +375,13 @@ def publish_caption(
     if server is None:
         return None
     return server.publish_caption(text, final=final, speaker=speaker, ttl_seconds=ttl_seconds)
+
+
+def publish_live_coding_state(config: dict | None, **fields: Any) -> dict[str, Any] | None:
+    server = ensure_live_overlay_server(config)
+    if server is None:
+        return None
+    return server.publish_live_coding(**fields)
 
 
 def stop_live_overlay_server() -> None:
@@ -438,6 +505,7 @@ _OVERLAY_HTML = """<!doctype html>
       --host-accent: #00d6a3;
       --assistant-accent: #7cc7ff;
       --chat-accent: #ffd166;
+      --coding-accent: #b6f36b;
       --box-bg: rgba(8, 13, 18, 0.58);
       --box-border: rgba(245, 251, 255, 0.18);
       --shadow: rgba(0, 0, 0, 0.86);
@@ -453,6 +521,64 @@ _OVERLAY_HTML = """<!doctype html>
     }
     body {
       position: relative;
+    }
+    #coding-panel {
+      position: fixed;
+      left: 2vw;
+      top: 3vh;
+      width: min(560px, 45vw);
+      min-height: 118px;
+      padding: 12px 14px;
+      opacity: 0;
+      border: 1px solid var(--box-border);
+      border-left: 5px solid var(--coding-accent);
+      border-radius: 8px;
+      background: rgba(8, 13, 18, 0.58);
+      color: var(--caption-final);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.30);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+      transition: opacity 140ms ease;
+    }
+    #coding-panel.visible {
+      opacity: 1;
+    }
+    .codingTitle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+      color: var(--caption-muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    #coding-status {
+      color: var(--coding-accent);
+    }
+    .codingTask {
+      margin-bottom: 8px;
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .codingGrid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 5px 10px;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .codingKey {
+      color: var(--caption-muted);
+      font-weight: 700;
+    }
+    .codingValue {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     #captions {
       position: fixed;
@@ -572,10 +698,30 @@ _OVERLAY_HTML = """<!doctype html>
         width: 100%;
         height: 70px;
       }
+      #coding-panel {
+        left: 3vw;
+        right: 3vw;
+        top: 3vh;
+        width: auto;
+      }
     }
   </style>
 </head>
 <body>
+  <div id="coding-panel" aria-live="polite">
+    <div class="codingTitle">
+      <span>ライブコーディング</span>
+      <span id="coding-status">idle</span>
+    </div>
+    <div id="coding-task" class="codingTask"></div>
+    <div class="codingGrid">
+      <span class="codingKey">Codex</span><span id="coding-codex" class="codingValue"></span>
+      <span class="codingKey">Build</span><span id="coding-build" class="codingValue"></span>
+      <span class="codingKey">Test</span><span id="coding-test" class="codingValue"></span>
+      <span class="codingKey">Error</span><span id="coding-error" class="codingValue"></span>
+      <span class="codingKey">Next</span><span id="coding-next" class="codingValue"></span>
+    </div>
+  </div>
   <div id="captions">
     <div class="lane chat">
       <div id="caption-chat" class="captionBox chat" aria-live="polite">
@@ -603,12 +749,36 @@ _OVERLAY_HTML = """<!doctype html>
       chat: document.getElementById('caption-chat')
     };
     const expiresAt = { host: 0, assistant: 0, chat: 0 };
+    const codingEls = {
+      panel: document.getElementById('coding-panel'),
+      status: document.getElementById('coding-status'),
+      task: document.getElementById('coding-task'),
+      codex: document.getElementById('coding-codex'),
+      build: document.getElementById('coding-build'),
+      test: document.getElementById('coding-test'),
+      error: document.getElementById('coding-error'),
+      next: document.getElementById('coding-next')
+    };
 
     function applyState(state) {
       const captions = state && state.captions ? state.captions : { host: state && state.caption ? state.caption : {} };
       applyCaption('host', captions.host || {});
       applyCaption('assistant', captions.assistant || {});
       applyCaption('chat', captions.chat || {});
+      applyLiveCoding(state && state.live_coding ? state.live_coding : {});
+    }
+
+    function applyLiveCoding(item) {
+      if (!codingEls.panel) return;
+      const visible = !!item.enabled && !!(item.current_task || item.status !== 'idle' || item.codex_status !== 'idle');
+      codingEls.panel.className = visible ? 'visible' : '';
+      codingEls.status.textContent = item.status || 'idle';
+      codingEls.task.textContent = item.current_task || '';
+      codingEls.codex.textContent = item.codex_status || 'idle';
+      codingEls.build.textContent = item.build_status || 'idle';
+      codingEls.test.textContent = item.test_status || 'idle';
+      codingEls.error.textContent = item.error_summary || '';
+      codingEls.next.textContent = item.next_step || '';
     }
 
     function applyCaption(speaker, item) {
