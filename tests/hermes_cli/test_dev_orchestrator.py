@@ -278,6 +278,38 @@ def test_list_dev_tasks_filters_by_repo(dev_env, tmp_path):
     assert kai_items[0]["repo_id"] == "kai"
 
 
+def test_list_dev_tasks_hides_old_done_tasks(worker_env):
+    import time
+
+    from hermes_cli import kanban_db as kb
+
+    old_done = assign_dev_task(worker_env, "proj", "Old finished work")["task_id"]
+    old_blocked = assign_dev_task(worker_env, "proj", "Old blocked work")["task_id"]
+    fresh = assign_dev_task(worker_env, "proj", "Fresh work")["task_id"]
+    three_hours_ago = int(time.time()) - 3 * 3600
+    with kb.connect_closing() as conn:
+        kb.complete_task(conn, old_done, result="done")
+        kb.complete_task(conn, fresh, result="done")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (three_hours_ago, old_done))
+        assert kb.claim_task(conn, old_blocked, claimer="x") is not None
+        kb.block_task(conn, old_blocked, reason="needs input")
+
+    default_ids = {t["task_id"] for t in list_dev_tasks(worker_env)}
+    all_ids = {t["task_id"] for t in list_dev_tasks(worker_env, include_all=True)}
+
+    assert fresh in default_ids
+    assert old_blocked in default_ids  # blocked needs attention, never hidden
+    assert old_done not in default_ids
+    assert old_done in all_ids
+
+    listed = handle_dev_command("tasks", config=worker_env)
+    listed_all = handle_dev_command("tasks --all", config=worker_env)
+    assert "Old finished work" not in listed["output"]
+    assert "are hidden" in listed["output"]
+    assert "Old finished work" in listed_all["output"]
+
+
 def test_handle_dev_command_assign_and_tasks(dev_env):
     created = handle_dev_command(
         "assign kai Fix the overlay flicker --worker claude_code",

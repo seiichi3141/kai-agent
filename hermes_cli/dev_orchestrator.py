@@ -363,13 +363,25 @@ def assign_dev_task(
     }
 
 
+def _recent_done_cutoff_seconds(config: dict[str, Any] | None) -> int:
+    value = _dev_config(config).get("tasks_recent_hours", 2)
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        hours = 2.0
+    return int(max(0.0, hours) * 3600)
+
+
 def list_dev_tasks(
     config: dict[str, Any] | None,
     *,
     repo_id: str = "",
     limit: int = 50,
+    include_all: bool = False,
 ) -> list[dict[str, Any]]:
-    del config
+    """List dev tasks; by default finished (done) tasks disappear after
+    ``dev_orchestrator.tasks_recent_hours`` (blocked stays visible — it
+    needs attention). ``include_all`` shows everything non-archived."""
     try:
         from hermes_cli import kanban_db as kb
 
@@ -377,6 +389,9 @@ def list_dev_tasks(
             tasks = kb.list_tasks(conn, tenant=DEV_TENANT, limit=limit)
     except Exception:
         return []
+    cutoff = 0
+    if not include_all:
+        cutoff = int(time.time()) - _recent_done_cutoff_seconds(config)
     items: list[dict[str, Any]] = []
     for task in tasks:
         meta = parse_dev_task_metadata(task.body)
@@ -384,6 +399,10 @@ def list_dev_tasks(
             continue
         if repo_id and str(meta.get("repo_id") or "") != repo_id:
             continue
+        if not include_all and task.status == "done":
+            finished_at = task.completed_at or task.created_at or 0
+            if finished_at < cutoff:
+                continue
         items.append(
             {
                 "task_id": task.id,
@@ -395,6 +414,7 @@ def list_dev_tasks(
                 "pr": meta.get("pr"),
                 "issue": meta.get("issue"),
                 "created_at": task.created_at,
+                "completed_at": task.completed_at,
             }
         )
     return items
@@ -1339,11 +1359,18 @@ def handle_dev_command(
             }
         return {"success": False, "error": result.get("error") or "failed to create dev task"}
     if sub == "tasks":
-        repo_filter = parts[1] if len(parts) > 1 else ""
+        rest = parts[1:]
+        include_all = "--all" in rest
+        rest = [p for p in rest if p != "--all"]
+        repo_filter = rest[0] if rest else ""
         if repo_filter and get_repository(config, repo_filter) is None:
             return {"success": False, "error": f"repository not found: {repo_filter}"}
-        items = list_dev_tasks(config, repo_id=repo_filter)
-        return {"success": True, "output": format_dev_tasks(items, repo_filter)}
+        items = list_dev_tasks(config, repo_id=repo_filter, include_all=include_all)
+        output = format_dev_tasks(items, repo_filter)
+        if not include_all:
+            hours = _recent_done_cutoff_seconds(config) / 3600
+            output += f"\n  (done tasks older than {hours:g}h are hidden — use /dev tasks --all)"
+        return {"success": True, "output": output}
     if sub == "run":
         if len(parts) < 2:
             return {"success": False, "error": "usage: /dev run <task_id> [--wait]"}

@@ -1854,6 +1854,9 @@ DEFAULT_CONFIG = {
         # Push the task branch and open a GitHub PR automatically after a
         # successful worker run (opt-in; equivalent to /dev pr --confirm).
         "auto_create_pr": False,
+        # /dev tasks hides done tasks finished more than this many hours
+        # ago (blocked stays visible). Use /dev tasks --all to see all.
+        "tasks_recent_hours": 2,
         "require_approval_for_issue_create": True,
         "require_approval_for_pr_create": True,
         "require_approval_for_push": True,
