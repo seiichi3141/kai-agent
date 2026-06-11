@@ -1838,6 +1838,31 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "dev_orchestrator": {
+        "enabled": True,
+        "default_worker": "codex",
+        "worktree_root": "~/.hermes/dev-worktrees",
+        "require_approval_for_issue_create": True,
+        "require_approval_for_pr_create": True,
+        "require_approval_for_push": True,
+        "require_approval_for_commit": False,
+        "voice_notifications": {
+            "enabled": True,
+            "max_chars": 120,
+            "cooldown_seconds": 10,
+            "report_started": True,
+            "report_completed": True,
+            "report_blocked": True,
+            "report_failed": True,
+        },
+        "vscode": {
+            "command": "code",
+            "fallback_macos_app": "Visual Studio Code",
+        },
+    },
+
+    "repositories": {},
+
     "voice": {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,

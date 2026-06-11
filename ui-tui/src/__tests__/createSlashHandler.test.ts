@@ -588,6 +588,37 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('voice: ON\nvoice TTS: ON')
   })
 
+  it('/dev open uses command.dispatch directly so gateway can open local apps', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'exec', output: 'Opened kai in VS Code' })
+            }
+
+            return Promise.resolve({ output: 'wrong path' })
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/dev open kai')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', {
+        arg: 'open kai',
+        name: 'dev',
+        session_id: null
+      })
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('Opened kai in VS Code')
+  })
+
   it('resolves unique local aliases through the catalog', () => {
     const ctx = buildCtx({
       local: {

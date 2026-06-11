@@ -7,7 +7,7 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
 
-const DIRECT_DISPATCH_COMMANDS = new Set(['stream'])
+const DIRECT_DISPATCH_COMMANDS = new Set(['dev', 'stream'])
 
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { gw } = ctx.gateway

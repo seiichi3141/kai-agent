@@ -8232,6 +8232,16 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5031, format_apply_result(result))
         return _err(rid, 4004, "usage: /stream [game|status]")
 
+    if name == "dev":
+        try:
+            from hermes_cli.dev_orchestrator import handle_dev_command
+        except Exception as exc:
+            return _err(rid, 5030, f"development orchestrator unavailable: {exc}")
+        result = handle_dev_command(arg or "status", config=_load_cfg())
+        if result.get("success"):
+            return _ok(rid, {"type": "exec", "output": str(result.get("output") or "(no output)")})
+        return _err(rid, 5032, str(result.get("error") or "development command failed"))
+
     try:
         from hermes_cli.plugins import (
             get_plugin_command_handler,

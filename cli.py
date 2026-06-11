@@ -7660,6 +7660,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_voice_command(cmd_original)
         elif canonical == "stream":
             self._handle_stream_command(cmd_original)
+        elif canonical == "dev":
+            self._handle_dev_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
@@ -9399,6 +9401,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         _cprint(f"Unknown stream subcommand: {subcommand}")
         _cprint("Usage: /stream [game|status]")
+
+    def _handle_dev_command(self, command: str):
+        """Handle /dev development-orchestrator commands."""
+        parts = command.strip().split(maxsplit=1)
+        arg = parts[1] if len(parts) > 1 else "status"
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.dev_orchestrator import handle_dev_command
+        except Exception as exc:
+            _cprint(f"Development orchestrator unavailable: {exc}")
+            return
+
+        result = handle_dev_command(arg, config=load_config(), saver=save_config_value)
+        if result.get("success"):
+            _cprint(str(result.get("output") or "(no output)"))
+        else:
+            _cprint(f"Development command failed: {result.get('error') or 'unknown error'}")
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
