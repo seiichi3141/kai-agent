@@ -644,6 +644,30 @@ def test_create_dev_pr_confirm_pushes_and_saves_url(worker_env):
     assert "PR already exists" in again["error"]
 
 
+def test_create_dev_pr_adopts_existing_pr(worker_env):
+    config = _with_github(worker_env)
+    task_id, _ = _finished_task_with_commit(config)
+
+    def fake_external(command):
+        if command[0] == "gh":
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr='a pull request for branch "dev/x" into branch "main" already exists:\nhttps://github.com/seiichi3141/proj/pull/42',
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("hermes_cli.dev_orchestrator.shutil.which", lambda _name: "/usr/bin/gh")
+        result = create_dev_pr(config, task_id, confirm=True, runner=fake_external)
+
+    assert result["success"] is True
+    assert result["status"] == "exists"
+    assert result["pr_url"] == "https://github.com/seiichi3141/proj/pull/42"
+    assert list_dev_tasks(config)[0]["pr"] == "https://github.com/seiichi3141/proj/pull/42"
+
+
 def test_create_dev_pr_blocks_uncommitted_when_commit_gated(worker_env):
     config = _with_github(worker_env)
     config["dev_orchestrator"]["require_approval_for_commit"] = True

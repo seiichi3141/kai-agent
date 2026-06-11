@@ -1155,7 +1155,26 @@ def create_dev_pr(
     except Exception as exc:
         return {"success": False, "error": f"gh pr create failed: {exc}"}
     if created.returncode != 0:
-        return {"success": False, "error": (created.stderr or created.stdout or "gh pr create failed").strip()}
+        detail = (created.stderr or created.stdout or "gh pr create failed").strip()
+        # Adopt a PR that already exists for this branch (idempotent re-run).
+        existing = re.search(r"already exists:\s*(https://\S+)", detail)
+        if existing:
+            url = existing.group(1)
+            meta["pr"] = url
+            try:
+                _update_task_meta(clean_id, meta)
+            except Exception:
+                pass
+            return {
+                "success": True,
+                "status": "exists",
+                "task_id": clean_id,
+                "branch": branch,
+                "base": base,
+                "pr_url": url,
+                "output": f"PR already exists for {clean_id}: {url}",
+            }
+        return {"success": False, "error": detail}
     url = ""
     for line in reversed((created.stdout or "").strip().splitlines()):
         if line.strip().startswith("https://"):
