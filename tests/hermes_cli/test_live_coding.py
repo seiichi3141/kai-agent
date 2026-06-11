@@ -74,8 +74,9 @@ def test_build_delegate_command_adds_live_stream_safety_rules():
 
     command = build_delegate_command("Fix the login button", cfg)
 
-    assert command[:2] == ["codex", "exec"]
-    prompt = command[2]
+    assert command[:3] == ["codex", "exec", "--"]
+    prompt = command[3]
+    assert not prompt.startswith("-")
     assert "Fix the login button" in prompt
     assert "Do not reveal secrets" in prompt
     assert "Do not run git commit or git push" in prompt
@@ -88,8 +89,9 @@ def test_build_delegate_command_for_claude_uses_headless_print_mode():
 
     command = build_delegate_command("Fix the login button", cfg)
 
-    assert command[:4] == ["claude", "-p", "--permission-mode", "acceptEdits"]
-    prompt = command[4]
+    assert command[:5] == ["claude", "-p", "--permission-mode", "acceptEdits", "--"]
+    prompt = command[5]
+    assert not prompt.startswith("-")
     assert "Fix the login button" in prompt
     assert "Do not reveal secrets" in prompt
     assert "Do not run git commit or git push" in prompt
@@ -106,9 +108,9 @@ def test_build_delegate_command_for_claude_omits_permission_mode_when_read_only(
 
     command = build_delegate_command("Inspect the login button", cfg)
 
-    assert command[:2] == ["claude", "-p"]
+    assert command[:3] == ["claude", "-p", "--"]
     assert "--permission-mode" not in command
-    assert "Do not modify files" in command[2]
+    assert "Do not modify files" in command[3]
 
 
 def test_check_delegate_available_uses_configured_claude_path():

@@ -179,13 +179,23 @@ def _compose_delegate_prompt(task: str, cfg: LiveCodingConfig) -> str:
         rules.append("Do not modify files; inspect and report only.")
     if cfg.require_approval_for_delete:
         rules.append("Ask for explicit approval before destructive file deletion.")
-    return "\n".join(["\n".join(f"- {rule}" for rule in rules), "", "Task:", task.strip()])
+    # The prompt must not start with "-": both codex and claude would parse a
+    # leading hyphen in the positional argument as a CLI option.
+    return "\n".join(
+        [
+            "Follow these rules for this delegated task:",
+            "\n".join(f"- {rule}" for rule in rules),
+            "",
+            "Task:",
+            task.strip(),
+        ]
+    )
 
 
 def build_delegate_command(task: str, cfg: LiveCodingConfig) -> list[str]:
     prompt = _compose_delegate_prompt(task, cfg)
     if cfg.delegate_to == "codex":
-        return [cfg.codex_path, "exec", prompt]
+        return [cfg.codex_path, "exec", "--", prompt]
     if cfg.delegate_to == "claude":
         # Claude Code headless mode: -p runs one-shot and exits. Permission
         # prompts cannot be answered headlessly, so file edits need an
@@ -193,7 +203,7 @@ def build_delegate_command(task: str, cfg: LiveCodingConfig) -> list[str]:
         command = [cfg.claude_path, "-p"]
         if cfg.allow_file_edits and cfg.claude_permission_mode:
             command += ["--permission-mode", cfg.claude_permission_mode]
-        command.append(prompt)
+        command += ["--", prompt]
         return command
     raise ValueError(f"unsupported live coding delegate: {cfg.delegate_to}")
 
@@ -233,6 +243,9 @@ def run_delegate(
             cwd=str(cwd),
             text=True,
             capture_output=True,
+            # Close stdin so delegates that read piped stdin (codex exec)
+            # see EOF immediately instead of waiting on the parent's stdin.
+            stdin=subprocess.DEVNULL,
             timeout=cfg.timeout_seconds,
             check=False,
         )
