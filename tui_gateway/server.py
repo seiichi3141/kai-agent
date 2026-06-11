@@ -9620,6 +9620,36 @@ def _ensure_live_overlay_server() -> str | None:
         return None
 
 
+_dev_voice_watcher: threading.Thread | None = None
+_dev_voice_watcher_lock = threading.Lock()
+
+
+def _start_dev_voice_watcher() -> None:
+    """Start the dev orchestrator voice notifier (idempotent)."""
+    global _dev_voice_watcher
+    with _dev_voice_watcher_lock:
+        if _dev_voice_watcher is not None and _dev_voice_watcher.is_alive():
+            return
+        try:
+            from hermes_cli.dev_notify import start_dev_voice_watcher
+
+            cfg = _load_cfg()
+            _dev_voice_watcher = start_dev_voice_watcher(cfg if isinstance(cfg, dict) else {})
+        except Exception as exc:
+            logger.warning("dev voice notifier failed to start: %s", exc)
+
+
+def _stop_dev_voice_watcher() -> None:
+    global _dev_voice_watcher
+    with _dev_voice_watcher_lock:
+        thread = _dev_voice_watcher
+        _dev_voice_watcher = None
+    if thread is not None:
+        stop = getattr(thread, "stop_event", None)
+        if stop is not None:
+            stop.set()
+
+
 def _emit_voice_transcript(text: str) -> None:
     _publish_live_overlay_caption(text, final=True)
     logger.info("voice transcript emitted: chars=%d text=%r", len(text or ""), text)
@@ -10147,6 +10177,10 @@ def _(rid, params: dict) -> dict:
         # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
         overlay_url = _ensure_live_overlay_server() if enabled else None
+        if enabled:
+            _start_dev_voice_watcher()
+        else:
+            _stop_dev_voice_watcher()
 
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the

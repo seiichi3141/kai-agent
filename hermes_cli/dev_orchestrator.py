@@ -518,14 +518,21 @@ def _task_text_without_meta(body: str | None) -> str:
 
 
 def _update_task_meta(task_id: str, meta: dict[str, Any]) -> None:
-    """Rewrite the dev-task-meta block in the task body."""
+    """Merge keys into the dev-task-meta block in the task body.
+
+    Merging (rather than overwriting) keeps concurrent writers safe:
+    the worker lane writes worktree/branch while the voice notifier
+    advances last_reported_event_id on the same task.
+    """
     from hermes_cli import kanban_db as kb
 
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         if task is None:
             return
-        body = _compose_dev_task_body(_task_text_without_meta(task.body), meta)
+        merged = parse_dev_task_metadata(task.body)
+        merged.update(meta)
+        body = _compose_dev_task_body(_task_text_without_meta(task.body), merged)
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (body, task_id))
 
