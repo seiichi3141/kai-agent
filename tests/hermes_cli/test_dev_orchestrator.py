@@ -660,6 +660,69 @@ def test_create_dev_pr_blocks_uncommitted_when_commit_gated(worker_env):
     assert "uncommitted" in result["error"]
 
 
+def test_run_dev_task_auto_creates_pr_when_enabled(worker_env, tmp_path):
+    config = _with_github(worker_env)
+    config["dev_orchestrator"]["auto_create_pr"] = True
+    created = assign_dev_task(config, "proj", "Ship it")
+    task_id = created["task_id"]
+    worktree = tmp_path / "worktrees" / "proj" / task_id
+    calls = []
+
+    def fake_runner(command):
+        calls.append(command)
+        if command[0] == "claude":
+            from pathlib import Path
+
+            Path(worktree, "feature.txt").write_text("new\n")
+            _git(worktree, "add", "feature.txt")
+            _git(worktree, "commit", "-q", "-m", "work")
+            return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+        if command[0] == "gh":
+            return subprocess.CompletedProcess(command, 0, stdout="https://github.com/seiichi3141/proj/pull/9\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("hermes_cli.dev_orchestrator.shutil.which", lambda _name: "/usr/bin/x")
+        result = run_dev_task(config, task_id, runner=fake_runner)
+
+    assert result["success"] is True
+    assert result["pr_success"] is True
+    assert result["pr_url"] == "https://github.com/seiichi3141/proj/pull/9"
+    items = list_dev_tasks(config)
+    assert items[0]["pr"] == "https://github.com/seiichi3141/proj/pull/9"
+
+
+def test_run_dev_task_reports_auto_pr_failure_without_failing_task(worker_env):
+    config = _with_github(worker_env)
+    config["dev_orchestrator"]["auto_create_pr"] = True
+    created = assign_dev_task(config, "proj", "No changes made")
+
+    def fake_runner(command):
+        return subprocess.CompletedProcess(command, 0, stdout="nothing to do", stderr="")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("hermes_cli.dev_orchestrator.shutil.which", lambda _name: "/usr/bin/x")
+        result = run_dev_task(config, created["task_id"], runner=fake_runner)
+
+    assert result["success"] is True  # task itself is done
+    assert result["pr_success"] is False
+    assert "no changes to publish" in result["pr_error"]
+
+
+def test_run_dev_task_skips_pr_by_default(worker_env):
+    created = assign_dev_task(worker_env, "proj", "No auto pr")
+
+    def fake_runner(command):
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("hermes_cli.dev_orchestrator.shutil.which", lambda _name: "/usr/bin/x")
+        result = run_dev_task(worker_env, created["task_id"], runner=fake_runner)
+
+    assert result["success"] is True
+    assert "pr_success" not in result
+
+
 def test_create_dev_pr_rejects_unfinished_task(worker_env):
     config = _with_github(worker_env)
     created = assign_dev_task(config, "proj", "Not run yet")

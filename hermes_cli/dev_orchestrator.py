@@ -754,7 +754,7 @@ def _execute_dev_run(
         summary = f"worker={worker} done: {changes}"
         with kb.connect_closing() as conn:
             kb.complete_task(conn, clean_id, result=output[-1000:], summary=summary, metadata=run_meta)
-        return {
+        result = {
             "success": True,
             "status": "done",
             "task_id": clean_id,
@@ -766,6 +766,15 @@ def _execute_dev_run(
             "log_path": log_path,
             "output": output,
         }
+        if bool(_dev_config(config).get("auto_create_pr", False)):
+            try:
+                pr = create_dev_pr(config, clean_id, confirm=True, runner=runner)
+            except Exception as exc:
+                pr = {"success": False, "error": str(exc)}
+            result["pr_success"] = bool(pr.get("success"))
+            result["pr_url"] = str(pr.get("pr_url") or "")
+            result["pr_error"] = str(pr.get("error") or "")
+        return result
 
     reason = f"worker={worker} failed with exit code {proc.returncode}"
     with kb.connect_closing() as conn:
@@ -894,6 +903,11 @@ def format_run_result(result: dict[str, Any]) -> str:
         lines.append(f"  Log:      {result.get('log_path')}")
     if result.get("error"):
         lines.append(f"  Error:    {result.get('error')}")
+    if "pr_success" in result:
+        if result.get("pr_success"):
+            lines.append(f"  PR:       {result.get('pr_url') or '(created)'}")
+        else:
+            lines.append(f"  PR:       failed — {result.get('pr_error') or 'unknown error'}")
     return "\n".join(lines)
 
 
