@@ -233,6 +233,8 @@ def atomic_roundtrip_yaml_update(
     path: Union[str, Path],
     key_path: str,
     value: Any,
+    *,
+    delete: bool = False,
 ) -> None:
     """Update one dotted YAML key while preserving comments and readable text.
 
@@ -240,6 +242,9 @@ def atomic_roundtrip_yaml_update(
     user-edited config files where comments, ordering, quoting, and Unicode
     should survive a single setting mutation.  Writes still use the same temp
     file + fsync + atomic replace pattern.
+
+    With ``delete=True`` the key is removed instead (``value`` is ignored);
+    a missing key or missing intermediate mapping is a no-op.
     """
     from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
@@ -264,13 +269,23 @@ def atomic_roundtrip_yaml_update(
 
     current = config
     keys = key_path.split(".")
-    for key in keys[:-1]:
-        next_value = current.get(key)
-        if not isinstance(next_value, CommentedMap):
-            next_value = CommentedMap()
-            current[key] = next_value
-        current = next_value
-    current[keys[-1]] = value
+    if delete:
+        for key in keys[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, CommentedMap):
+                return
+            current = next_value
+        if keys[-1] not in current:
+            return
+        del current[keys[-1]]
+    else:
+        for key in keys[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, CommentedMap):
+                next_value = CommentedMap()
+                current[key] = next_value
+            current = next_value
+        current[keys[-1]] = value
 
     original_mode = _preserve_file_mode(path)
     fd, tmp_path = tempfile.mkstemp(

@@ -156,6 +156,41 @@ registry.register(
     check_fn=check_dev_requirements,
 )
 
+def dev_stop_tool(task_id: str) -> str:
+    try:
+        from hermes_cli.dev_orchestrator import stop_dev_task
+
+        return json.dumps(stop_dev_task(_load_config(), task_id), ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+
+
+registry.register(
+    name="dev_stop",
+    toolset="dev",
+    schema={
+        "name": "dev_stop",
+        "description": (
+            "Stop a running dev task: terminates its coding worker and marks "
+            "the task blocked (stopped by user). Use when the user asks to "
+            "stop, cancel, or abort a development task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Dev task id of the running task.",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    handler=lambda args, **kw: dev_stop_tool(args.get("task_id", "")),
+    check_fn=check_dev_requirements,
+)
+
+
 registry.register(
     name="dev_run",
     toolset="dev",

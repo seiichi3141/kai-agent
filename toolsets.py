@@ -75,7 +75,7 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
     # Dev orchestrator — gated via check_fn in tools/dev_tools.py (needs
     # dev_orchestrator.enabled and at least one registered repository).
-    "dev_status", "dev_assign", "dev_run",
+    "dev_status", "dev_assign", "dev_run", "dev_stop",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -176,7 +176,7 @@ TOOLSETS = {
             "dev tasks, assign new tasks, and start coding-CLI workers in "
             "isolated git worktrees"
         ),
-        "tools": ["dev_status", "dev_assign", "dev_run"],
+        "tools": ["dev_status", "dev_assign", "dev_run", "dev_stop"],
         "includes": []
     },
     

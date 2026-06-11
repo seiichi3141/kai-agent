@@ -459,6 +459,88 @@ def test_handle_dev_command_run_is_async_by_default(worker_env):
     assert status == "done"
 
 
+def test_remove_repository_via_command(tmp_path):
+    deleted = []
+    config = {"repositories": {"kai": {"local_path": str(tmp_path)}}}
+    deleter = lambda key: deleted.append(key) or True  # noqa: E731
+
+    removed = handle_dev_command("repo remove kai", config=config, deleter=deleter)
+    missing = handle_dev_command("repo remove nope", config=config, deleter=deleter)
+
+    assert removed["success"] is True
+    assert "Repository removed" in removed["output"]
+    assert deleted == ["repositories.kai"]
+    assert missing["success"] is False
+    assert "repository not found" in missing["error"]
+
+
+def test_atomic_roundtrip_yaml_delete(tmp_path):
+    from utils import atomic_roundtrip_yaml_update
+
+    path = tmp_path / "config.yaml"
+    path.write_text("# keep this comment\nrepositories:\n  kai:\n    local_path: /x\n  other:\n    local_path: /y\n")
+
+    atomic_roundtrip_yaml_update(path, "repositories.kai", None, delete=True)
+    atomic_roundtrip_yaml_update(path, "repositories.missing", None, delete=True)
+    atomic_roundtrip_yaml_update(path, "nope.deep.key", None, delete=True)
+
+    text = path.read_text()
+    assert "keep this comment" in text
+    assert "kai" not in text
+    assert "other" in text
+
+
+def test_stop_dev_task_blocks_claimed_task_without_live_worker(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.dev_orchestrator import stop_dev_task
+
+    created = assign_dev_task(worker_env, "proj", "Long running work")
+    task_id = created["task_id"]
+    with kb.connect_closing() as conn:
+        assert kb.claim_task(conn, task_id, claimer="other-process") is not None
+
+    result = stop_dev_task(worker_env, task_id)
+
+    assert result["success"] is True
+    assert result["status"] == "blocked"
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "blocked"
+
+    not_running = stop_dev_task(worker_env, task_id)
+    assert not_running["success"] is False
+    assert "not running" in not_running["error"]
+
+
+def test_stop_dev_task_terminates_live_worker(worker_env):
+    import hermes_cli.dev_orchestrator as devmod
+
+    class FakeProc:
+        def __init__(self):
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    fake = FakeProc()
+    with devmod._workers_lock:
+        devmod._RUNNING_WORKERS["t_live"] = fake
+    try:
+        result = devmod.stop_dev_task(worker_env, "t_live")
+    finally:
+        with devmod._workers_lock:
+            devmod._RUNNING_WORKERS.pop("t_live", None)
+            stopped = "t_live" in devmod._STOPPED_TASKS
+            devmod._STOPPED_TASKS.discard("t_live")
+
+    assert result["success"] is True
+    assert result["status"] == "stopping"
+    assert fake.terminated is True
+    assert stopped is True
+
+
 def test_run_dev_task_rejects_hermes_worker(worker_env):
     created = assign_dev_task(worker_env, "proj", "Use hermes lane", worker="hermes")
 

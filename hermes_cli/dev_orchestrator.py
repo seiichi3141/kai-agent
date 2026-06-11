@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,11 @@ _OUTPUT_TAIL_CHARS = 4000
 _GH_TIMEOUT_SECONDS = 60
 _ISSUE_BODY_MAX_CHARS = 2000
 
+# Live worker subprocesses by task id, so /dev stop can terminate them.
+_workers_lock = threading.Lock()
+_RUNNING_WORKERS: dict[str, subprocess.Popen] = {}
+_STOPPED_TASKS: set[str] = set()
+
 
 @dataclass(frozen=True)
 class RepositoryInfo:
@@ -57,6 +63,15 @@ class RepositoryInfo:
 
 def save_config_value(key_path: str, value: Any) -> bool:
     """Persist one config value using the round-trip YAML updater."""
+    return _write_config_key(key_path, value, delete=False)
+
+
+def delete_config_value(key_path: str) -> bool:
+    """Remove one config key using the round-trip YAML updater."""
+    return _write_config_key(key_path, None, delete=True)
+
+
+def _write_config_key(key_path: str, value: Any, *, delete: bool) -> bool:
     from hermes_cli.config import ensure_hermes_home, get_config_path, is_managed, managed_error
     from utils import atomic_roundtrip_yaml_update
 
@@ -67,7 +82,7 @@ def save_config_value(key_path: str, value: Any) -> bool:
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        atomic_roundtrip_yaml_update(config_path, key_path, value, delete=delete)
         return True
     except Exception:
         return False
@@ -685,7 +700,7 @@ def _execute_dev_run(
     timeout = _worker_timeout_seconds(config)
     started = time.monotonic()
     try:
-        proc = _invoke_worker(run, command, worktree_path, timeout)
+        proc = _invoke_worker(run, command, worktree_path, timeout, clean_id)
     except subprocess.TimeoutExpired:
         duration_ms = int((time.monotonic() - started) * 1000)
         reason = f"worker timed out after {timeout}s (worker={worker}, branch={branch})"
@@ -699,11 +714,30 @@ def _execute_dev_run(
         return {"success": False, "status": "blocked", "error": reason}
 
     duration_ms = int((time.monotonic() - started) * 1000)
+    with _workers_lock:
+        was_stopped = clean_id in _STOPPED_TASKS
+        _STOPPED_TASKS.discard(clean_id)
     output = sanitize_for_stream(
         "\n".join(part for part in [proc.stdout, proc.stderr] if part),
         max_chars=_OUTPUT_TAIL_CHARS,
     )
     log_path = _write_worker_log(clean_id, output)
+    if was_stopped:
+        reason = "stopped by user"
+        with kb.connect_closing() as conn:
+            kb.block_task(conn, clean_id, reason=reason)
+        return {
+            "success": False,
+            "status": "blocked",
+            "task_id": clean_id,
+            "worker": worker,
+            "branch": branch,
+            "worktree_path": worktree_path,
+            "duration_ms": duration_ms,
+            "log_path": log_path,
+            "error": reason,
+            "output": output,
+        }
     changes = _worktree_change_summary(worktree_path, repo.default_branch)
     run_meta = {
         "kind": "dev_task",
@@ -756,9 +790,10 @@ def _invoke_worker(
     command: list[str],
     worktree_path: str,
     timeout: int,
+    task_id: str = "",
 ) -> subprocess.CompletedProcess[str]:
     if run is _default_worker_run:
-        return _default_worker_run(command, cwd=worktree_path, timeout=timeout)
+        return _default_worker_run(command, cwd=worktree_path, timeout=timeout, task_id=task_id)
     return run(command)
 
 
@@ -767,16 +802,82 @@ def _default_worker_run(
     *,
     cwd: str = "",
     timeout: int = _DEFAULT_WORKER_TIMEOUT_SECONDS,
+    task_id: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    proc = subprocess.Popen(
         command,
         cwd=cwd or None,
         text=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
-        timeout=timeout,
-        check=False,
     )
+    if task_id:
+        with _workers_lock:
+            _RUNNING_WORKERS[task_id] = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    finally:
+        if task_id:
+            with _workers_lock:
+                _RUNNING_WORKERS.pop(task_id, None)
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def stop_dev_task(config: dict[str, Any] | None, task_id: str) -> dict[str, Any]:
+    """Stop a running dev task.
+
+    Terminates the live worker subprocess when this process owns it;
+    otherwise just clears the Kanban state (running -> blocked) — a
+    worker started by another gateway process is not killed.
+    """
+    del config
+    from hermes_cli import kanban_db as kb
+
+    clean_id = str(task_id or "").strip()
+    if not clean_id:
+        return {"success": False, "error": "usage: /dev stop <task_id>"}
+    with _workers_lock:
+        proc = _RUNNING_WORKERS.get(clean_id)
+        if proc is not None:
+            _STOPPED_TASKS.add(clean_id)
+    if proc is not None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except Exception:
+            pass
+        return {
+            "success": True,
+            "status": "stopping",
+            "task_id": clean_id,
+            "output": f"Worker terminated for {clean_id}; the task will be marked blocked (stopped by user).",
+        }
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, clean_id)
+        if task is None:
+            return {"success": False, "error": f"task not found: {clean_id}"}
+        if task.status != "running":
+            return {"success": False, "error": f"task is not running (status: {task.status})"}
+        kb.block_task(conn, clean_id, reason="stopped by user")
+    return {
+        "success": True,
+        "status": "blocked",
+        "task_id": clean_id,
+        "output": (
+            f"Task {clean_id} marked blocked (stopped by user).\n"
+            "  Note: no live worker in this process — if another process started it, "
+            "its worker may still be running."
+        ),
+    }
 
 
 def format_run_result(result: dict[str, Any]) -> str:
@@ -1063,6 +1164,25 @@ def create_dev_pr(
     }
 
 
+def remove_repository(
+    config: dict[str, Any] | None,
+    repo_id: str,
+    *,
+    deleter: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
+    """Unregister a repository from the config.
+
+    Only removes the registry entry — the checkout, existing worktrees,
+    and Kanban tasks are left untouched.
+    """
+    clean_id = str(repo_id or "").strip()
+    if clean_id not in _repo_config(config):
+        return {"success": False, "error": f"repository not found: {clean_id or '(empty)'}"}
+    remove = deleter or delete_config_value
+    ok = remove(f"repositories.{clean_id}")
+    return {"success": ok, "repo_id": clean_id, "error": "" if ok else "failed to update config"}
+
+
 def _vscode_command(config: dict[str, Any] | None, path: str) -> list[str]:
     dev = _dev_config(config)
     vscode = dev.get("vscode")
@@ -1122,6 +1242,7 @@ def handle_dev_command(
     config: dict[str, Any] | None,
     saver: ConfigSaver | None = None,
     opener: Opener | None = None,
+    deleter: Callable[[str], bool] | None = None,
 ) -> dict[str, Any]:
     try:
         parts = shlex.split(str(arg or "").strip())
@@ -1215,6 +1336,15 @@ def handle_dev_command(
                 ]
             ),
         }
+    if sub == "stop":
+        if len(parts) < 2:
+            return {"success": False, "error": "usage: /dev stop <task_id>"}
+        result = stop_dev_task(config, parts[1])
+        return {
+            "success": bool(result.get("success")),
+            "output": str(result.get("output") or ""),
+            "error": result.get("error"),
+        }
     if sub == "issue":
         if len(parts) < 2:
             return {"success": False, "error": "usage: /dev issue <repo_id> [list|<number>]"}
@@ -1246,6 +1376,17 @@ def handle_dev_command(
             return {"success": True, "output": format_repositories(load_repositories(config))}
         if action == "show" and len(parts) >= 3:
             return {"success": True, "output": format_repository(get_repository(config, parts[2]), parts[2])}
+        if action in {"remove", "rm", "delete"} and len(parts) >= 3:
+            result = remove_repository(config, parts[2], deleter=deleter)
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "output": (
+                        f"Repository removed from registry: {result['repo_id']}\n"
+                        "  (checkout, worktrees, and tasks are left untouched)"
+                    ),
+                }
+            return {"success": False, "error": result.get("error") or "failed to remove repository"}
         if action == "add" and len(parts) >= 4:
             github = ""
             default_branch = ""
@@ -1274,7 +1415,7 @@ def handle_dev_command(
             "success": False,
             "error": (
                 "usage: /dev repo [list|show <repo_id>|add <repo_id> <local_path> "
-                "[--github owner/repo] [--worker codex|claude|hermes]]"
+                "[--github owner/repo] [--worker codex|claude|hermes]|remove <repo_id>]"
             ),
         }
     if sub == "open":
@@ -1282,4 +1423,4 @@ def handle_dev_command(
             return {"success": False, "error": "usage: /dev open <repo_id>"}
         result = open_repository(config, parts[1], opener=opener)
         return {"success": bool(result.get("success")), "output": format_open_result(result), "error": result.get("error")}
-    return {"success": False, "error": "usage: /dev [status|repos|repo show|repo add|assign|tasks|run|issue|pr|open]"}
+    return {"success": False, "error": "usage: /dev [status|repos|repo show|repo add|repo remove|assign|tasks|run|stop|issue|pr|open]"}
