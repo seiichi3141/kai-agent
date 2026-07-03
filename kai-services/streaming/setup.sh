@@ -30,10 +30,14 @@ install -D -m 0644 conf/10-kai-speaker.conf \
   "$HOME/.config/pipewire/pipewire.conf.d/10-kai-speaker.conf"
 systemctl --user restart pipewire wireplumber 2>/dev/null || true
 
-echo "==> 4/6 VNC パスワード（未設定なら対話で作成）"
+echo "==> 4/6 VNC パスワード（VNC_PASSWORD env で非対話設定可）"
 if [[ ! -f "$HOME/.vnc/passwd" ]]; then
   mkdir -p "$HOME/.vnc"
-  x11vnc -storepasswd "$HOME/.vnc/passwd"
+  if [[ -n "${VNC_PASSWORD:-}" ]]; then
+    x11vnc -storepasswd "$VNC_PASSWORD" "$HOME/.vnc/passwd"
+  else
+    x11vnc -storepasswd "$HOME/.vnc/passwd"
+  fi
 fi
 
 echo "==> 5/6 systemd user units"
