@@ -5,7 +5,7 @@ After=kai-desktop.service
 Requires=kai-xorg.service
 
 [Service]
-ExecStart=/usr/bin/x11vnc -display :0 -listen @TAILSCALE_IP@ -rfbport 5900 -rfbauth %h/.vnc/passwd -forever -shared -noxdamage
+ExecStart=/usr/bin/x11vnc -display :0 -listen @TAILSCALE_IP@ -no6 -rfbport 5900 -rfbauth %h/.vnc/passwd -forever -shared -noxdamage
 Restart=on-failure
 RestartSec=2
 

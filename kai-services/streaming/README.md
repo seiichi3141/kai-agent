@@ -26,9 +26,14 @@ bash kai-services/streaming/setup.sh
 ## 2. 検証（設計 §9 の 1〜4）
 
 ```bash
+# 注意: Tailscale SSH セッションは XDG_RUNTIME_DIR を設定しないため、
+# pactl / paplay を手動実行する前に必ず export する（systemd unit 経由なら不要）。
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
 DISPLAY=:0 xdpyinfo | grep dimensions        # → 1920x1080
 pactl list short sinks | grep kai_speaker
-paplay --device=kai_speaker /usr/share/sounds/alsa/Front_Center.wav
+ffmpeg -f lavfi -i "sine=frequency=440:duration=2" -y /tmp/test-tone.wav 2>/dev/null
+paplay --device=kai_speaker /tmp/test-tone.wav
 ```
 
 Mac の VNC クライアント（Finder → 「サーバへ接続」→ `vnc://<VMのTailscale IP>:5900`）で XFCE デスクトップが見えること。

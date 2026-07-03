@@ -28,7 +28,9 @@ EOF
 echo "==> 3/6 PipeWire null-sink（kai_speaker）"
 install -D -m 0644 conf/10-kai-speaker.conf \
   "$HOME/.config/pipewire/pipewire.conf.d/10-kai-speaker.conf"
-systemctl --user restart pipewire wireplumber 2>/dev/null || true
+# ヘッドレスサーバーでは pipewire-pulse が自動起動しないことがある（pactl 接続に必須）
+systemctl --user enable --now pipewire.socket pipewire-pulse.socket 2>/dev/null || true
+systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
 
 echo "==> 4/6 VNC パスワード（VNC_PASSWORD env で非対話設定可）"
 if [[ ! -f "$HOME/.vnc/passwd" ]]; then
