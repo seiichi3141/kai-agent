@@ -16,7 +16,12 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   obs-studio ffmpeg \
   x11-utils xdotool pulseaudio-utils \
   fonts-noto-cjk fonts-noto-color-emoji \
+  language-pack-ja language-pack-gnome-ja \
   curl jq git
+
+echo "==> 1b. 日本語ロケール（インストーラーは文字化けのため英語で入れる前提。ここで日本語化）"
+sudo locale-gen ja_JP.UTF-8
+sudo localectl set-locale LANG=ja_JP.UTF-8 || sudo update-locale LANG=ja_JP.UTF-8
 
 echo "==> 2/7 ブラウザ（snap の本物の Chromium。VM なので snap が使える）"
 sudo snap install chromium 2>/dev/null || echo "(chromium: already installed)"
