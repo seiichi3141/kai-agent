@@ -12,3 +12,6 @@ docs/*
 !.claude/agents/**
 !kai-services/
 !kai-services/**
+# サードパーティ（npm 依存・vendored 配布物）は対象外
+kai-services/**/node_modules/
+kai-services/**/vendor/

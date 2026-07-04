@@ -3,6 +3,8 @@
 {
   // .claude/agents/*.md は frontmatter+プロンプト本文の定義ファイルで文書ではないため lint 対象外（prettier のみ適用）
   "globs": ["docs/kai/**/*.md", "kai-services/**/*.md", "CLAUDE.md"],
+  // サードパーティ（npm 依存・vendored バイナリ配布物）は kai 所有ではないため除外
+  "ignores": ["**/node_modules/**", "**/vendor/**"],
   "config": {
     "default": true,
     // 行長制限なし（日本語の長文・テーブルのため。プロトタイプ踏襲）
