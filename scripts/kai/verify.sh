@@ -146,10 +146,16 @@ run_pr_mode() {
     return 1
   fi
   if [[ -z "${pr}" ]]; then
-    pr="$(gh pr view --repo "${repo}" --json number -q .number 2>/dev/null || true)"
+    # --repo 指定時は gh pr view がブランチ推論しないため、現在のブランチ名で PR を引く。
+    local branch
+    branch="$(git branch --show-current 2>/dev/null)"
+    if [[ -n "${branch}" ]]; then
+      pr="$(gh pr list --repo "${repo}" --head "${branch}" --state open \
+        --json number -q '.[0].number' 2>/dev/null || true)"
+    fi
   fi
   if [[ -z "${pr}" ]]; then
-    echo "❌ PR を特定できません。現在のブランチに PR が無いなら番号を渡してください: verify.sh --pr <N>"
+    echo "❌ PR を特定できません。現在のブランチに open な PR が無いなら番号を渡してください: verify.sh --pr <N>"
     return 1
   fi
   echo "▶ PR #${pr}（${repo}）の実状態を検証します（自己申告に頼らず gh で確認）"
