@@ -23,7 +23,7 @@
 │  kai-services/（独立プロセス群・systemd）                                │
 │  ├─ speechd    … 発話・字幕キュー（TTS 呼出・再生・字幕SSE・同期の正典）  │
 │  ├─ streaming  … X(dummy) デスクトップ + OBS + RTMP（セットアップ/制御）  │
-│  ├─ kai-overlay… 透過 Chromium（字幕SSE購読で描画。将来アバター/コメント）│
+│  ├─ kai-overlay… 透過WebKitGTK（字幕SSE購読・クリックスルー・将来拡張）  │
 │  └─ avatar     … PuruPuruPNGTuber（overlay に統合予定・ポストMVP）        │
 │                                                                        │
 │  X DISPLAY=:0（1920x1080）… kai の作業デスクトップ = 配信映像            │
@@ -99,7 +99,7 @@
 | 3   | speechd          | 独立プロセス         | 発話・字幕キュー（F-8〜F-10）。TTS 呼出・null-sink 再生・**字幕 SSE 配信**・縮退。同期の正典                                                                  | `kai-services/speechd/`                             | M2 ✅                       |
 | 4   | aquestalk-server | 独立プロセス（Mac）  | 汎用日本語 TTS。生テキスト → koe 変換（kuromoji）→ AquesTalk10 合成 → 文単位 NDJSON ストリーム。launchd 常駐、他ツールからも再利用可                          | `kai-services/aquestalk-server/`                    | M2 ✅                       |
 | 5   | streaming        | 独立プロセス + skill | X(dummy) + OBS + RTMP のセットアップ・制御（F-6）。obs-websocket 制御は skill から                                                                            | `kai-services/streaming/` + `skills/kai/broadcast/` | M0/M4                       |
-| 6a  | kai-overlay      | 独立プロセス         | 配信オーバーレイ（透過 Chromium）。speechd の字幕 SSE を購読して描画。将来アバター/コメント/進捗も集約                                                        | `kai-services/overlay/`                             | M2 ✅                       |
+| 6a  | kai-overlay      | 独立プロセス         | 配信オーバーレイ（WebKitGTK 透過ウィンドウ・クリックスルー）。speechd の字幕 SSE を購読して描画。将来アバター/コメント/進捗も集約                             | `kai-services/overlay/`                             | M2 ✅                       |
 | 6b  | avatar           | （overlay に統合）   | PuruPuruPNGTuber（F-11/11b）。kai-overlay に組み込む方針。口パクは null-sink monitor 駆動                                                                     | `kai-services/overlay/`                             | ポストMVP                   |
 | 7   | kai/workloop     | skill + cron ジョブ  | 自律ループの 1 tick（F-1〜F-4, F-28/29）。GitHub から作業導出 → 完遂 or idle-play                                                                             | `skills/kai/workloop/`                              | フェーズ1（MVP は手動指示） |
 | 8   | kai/review       | skill                | 隔離レビューの手順書（F-5）。delegate_task の子が使用。read-only 原則                                                                                         | `skills/kai/review/`                                | フェーズ1                   |
@@ -114,9 +114,9 @@
 
 ## 4. 発話・字幕同期メカニズム（F-10 の正典）
 
-> **実装確定（M2, 2026-07-04）:** 字幕は当初案の「OBS 字幕テキストソース（obs-websocket 更新）」ではなく、**Web オーバーレイ + SSE 方式**を採用した（オーナー判断）。理由: 汎用性——字幕・アバター・コメント・進捗を1枚の Web ページ（overlay）に集約でき、OBS ソースを増やさずに拡張できる。obs-websocket 5.x はヘッドレス GNOME でサーバー起動しない問題もあった。overlay は透過 Chromium でデスクトップに重ね、OBS の画面キャプチャ（XSHM）に自然に入る（PuruPuruPNGTuber アバターと同じ仕組み）。
+> **実装確定（M2, 2026-07-04）:** 字幕は当初案の「OBS 字幕テキストソース（obs-websocket 更新）」ではなく、**Web オーバーレイ + SSE 方式**を採用した（オーナー判断）。理由: 汎用性——字幕・アバター・コメント・進捗を1枚の Web ページ（overlay）に集約でき、OBS ソースを増やさずに拡張できる。obs-websocket 5.x はヘッドレス GNOME でサーバー起動しない問題もあった。overlay は透過ウィンドウでデスクトップに重ね、OBS の画面キャプチャ（XSHM）に自然に入る（PuruPuruPNGTuber アバターと同じ仕組み）。表示は **WebKitGTK ラッパー**（`overlay-window.py`）が正典 — snap Chromium は ARGB 透過が実機で効かず断念（経緯は `kai-services/overlay/README.md`）。WebKitGTK なら透過・枠なし・最前面に加え**クリックスルー**（入力シェイプ空）も成立し、kai のデスクトップ操作を妨げない。
 
-speechd は FIFO 単一コンシューマで**1 発話ずつ直列処理**する（発話の重なりなし）。TTS は Mac の **aquestalk-server**（汎用日本語 TTS、生テキスト → koe 変換 → 合成 → **文単位 NDJSON ストリーミング**）を呼ぶ。字幕は **speechd の SSE（`GET /events`）** で配信し、**kai-overlay**（透過 Chromium）が購読して描画する。
+speechd は FIFO 単一コンシューマで**1 発話ずつ直列処理**する（発話の重なりなし）。TTS は Mac の **aquestalk-server**（汎用日本語 TTS、生テキスト → koe 変換 → 合成 → **文単位 NDJSON ストリーミング**）を呼ぶ。字幕は **speechd の SSE（`GET /events`）** で配信し、**kai-overlay**（WebKitGTK 透過ウィンドウ）が購読して描画する。
 
 **Enqueue API:**
 

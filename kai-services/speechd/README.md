@@ -113,6 +113,10 @@ Content-Type: text/event-stream
 - **切断検知**: クライアントへの書き込みが失敗した時点（`BrokenPipeError` /
   `ConnectionResetError` 等）で購読リストから除去する。SSE 配信の失敗は
   発話処理（TTS 呼び出し・paplay 再生・トレース）を止めない（best-effort）。
+- **CORS**: 全レスポンスに `Access-Control-Allow-Origin: *` を付与する。
+  overlay は `file://` オリジンで動くため、これがないとブラウザエンジンが
+  EventSource の購読を CORS でブロックする（実機で確認済み）。bind は
+  127.0.0.1 限定なので `*` でも外部には露出しない。
 
 ## 動作仕様（設計 §4 の実装）
 

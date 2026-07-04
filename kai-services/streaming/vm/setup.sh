@@ -14,7 +14,8 @@ sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   openssh-server \
   obs-studio ffmpeg \
-  x11-utils xdotool pulseaudio-utils \
+  x11-utils xdotool wmctrl scrot pulseaudio-utils \
+  python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
   fonts-noto-cjk fonts-noto-color-emoji \
   language-pack-ja language-pack-gnome-ja \
   curl jq git

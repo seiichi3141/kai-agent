@@ -437,6 +437,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # overlay は file:// オリジンで動く（EventSource の CORS 対策）。
+        # bind は 127.0.0.1 限定なので "*" でも外部には露出しない。
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -462,6 +465,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
+        # overlay は file:// オリジン（Origin: null）から EventSource で接続する。
+        # このヘッダがないとブラウザが CORS で購読をブロックする（実機で確認済み）。
+        # bind は 127.0.0.1 限定なので "*" でも外部には露出しない。
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
         client_q = _sse_register()

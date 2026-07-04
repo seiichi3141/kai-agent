@@ -1,8 +1,9 @@
-# kai 配信オーバーレイ（透過 Chromium）を GNOME/X11 セッション上に常駐表示する。
+# kai 配信オーバーレイ（WebKitGTK 透過ウィンドウ）を GNOME/X11 セッション上に常駐表示する。
 # ~/.config/systemd/user/ に配置して systemctl --user enable --now kai-overlay。
-# 透過には --enable-transparent-visuals --disable-gpu が必須（GNOME/Mutter, X11 で確認済み）。
+# 透過・枠なし・最前面・クリックスルーの実装は overlay-window.py（WebKitGTK）。
+# snap Chromium は ARGB 透過が効かないため使わない（詳細は README.md）。
 [Unit]
-Description=kai overlay (transparent Chromium subtitle/avatar layer)
+Description=kai overlay (transparent WebKitGTK subtitle/avatar layer)
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -11,13 +12,7 @@ Environment=DISPLAY=:0
 Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sh -c 'until DISPLAY=:0 xdpyinfo >/dev/null 2>&1; do sleep 1; done'
-ExecStart=/snap/bin/chromium \
-  --app=file:///home/kai/kai-agent/kai-services/overlay/index.html \
-  --class=kai-overlay \
-  --user-data-dir=/home/kai/.config/kai/overlay-profile \
-  --enable-transparent-visuals --disable-gpu \
-  --window-size=1920,1080 --window-position=0,0 \
-  --no-first-run --disable-features=Translate --disable-infobars
+ExecStart=/usr/bin/python3 /home/kai/kai-agent/kai-services/overlay/overlay-window.py
 Restart=on-failure
 RestartSec=3
 
