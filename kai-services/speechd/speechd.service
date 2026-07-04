@@ -1,0 +1,30 @@
+# kai 発話・字幕キュー（speechd）。systemd --user ユニットのテンプレート。
+# install.sh が @REPO_DIR@ を実パスに置換して ~/.config/systemd/user/ に配置する。
+# 設計: docs/kai/design/00-system.md §3(ADR-3) / §4 / §5.4。
+#
+# 起動依存（設計 §5.4）: streaming（X → OBS）→ speechd → hermes。
+# ただし speechd 自体は streaming や TTS 不達でも縮退起動できる（配信スタック
+# なしでも kai は作業を続けられる）ため、After のみで Requires は付けない。
+[Unit]
+Description=kai speechd (speech + subtitle queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=@REPO_DIR@/kai-services/speechd
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=SPEECHD_PORT=8900
+Environment=SPEECHD_BIND=127.0.0.1
+Environment=TTS_URL=http://100.106.136.117:8890
+Environment=SUBTITLE_FILE=%h/.config/kai/subtitle.txt
+Environment=AUDIO_SINK=kai_speaker
+# hermes gateway が非デフォルトプロファイル（HERMES_HOME）で動く場合は同じ値を
+# ここにも明示すること。未設定なら speechd は ~/.hermes にトレースを書く
+# （README「プロファイル」参照）。
+# Environment=HERMES_HOME=%h/.hermes
+ExecStart=/usr/bin/python3 @REPO_DIR@/kai-services/speechd/speechd.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -21,9 +21,10 @@
 │  └─ (後日) plugins/platforms/youtube_live … チャット入出力              │
 │                                                                        │
 │  kai-services/（独立プロセス群・systemd）                                │
-│  ├─ speechd    … 発話・字幕キュー（TTS 呼出・再生・OBS 字幕・同期の正典） │
+│  ├─ speechd    … 発話・字幕キュー（TTS 呼出・再生・字幕SSE・同期の正典）  │
 │  ├─ streaming  … X(dummy) デスクトップ + OBS + RTMP（セットアップ/制御）  │
-│  └─ avatar     … PuruPuruPNGTuber オーバーレイ（M2 ストレッチ〜ポストMVP）│
+│  ├─ kai-overlay… 透過 Chromium（字幕SSE購読で描画。将来アバター/コメント）│
+│  └─ avatar     … PuruPuruPNGTuber（overlay に統合予定・ポストMVP）        │
 │                                                                        │
 │  X DISPLAY=:0（1920x1080）… kai の作業デスクトップ = 配信映像            │
 │  PipeWire null-sink … speechd が再生 → OBS が取込 → YouTube RTMP        │
@@ -32,7 +33,7 @@
         ┌──────────────┴──────────────┐
         ▼                             ▼
    自宅 Windows                      Mac
-   ローカル LLM（OpenAI 互換）        kai-services/mac-aquestalk
+   ローカル LLM（OpenAI 互換）        kai-services/aquestalk-server
    … 実況生成・意図分類など           … AquesTalk10 HTTP 合成サービス
      補助タスク専用                    （launchd 常駐）
 ```
@@ -91,20 +92,21 @@
 
 ## 3. コンポーネント一覧
 
-| #   | 名前          | 種別                 | 責務                                                                                                                                                          | 配置                                                | 時期                        |
-| --- | ------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------- |
-| 1   | kai_trace     | plugin               | 全事象ロギング（F-22）。hook で捕捉 → 秘匿マスク → JSONL 追記 + SQLite(FTS5) インデックス                                                                     | `plugins/kai_trace/`                                | M1                          |
-| 2   | kai_narrator  | plugin               | 実況（F-7）。hook 観測 → キュー → 背景スレッドで auxiliary `narration`（ローカル LLM）変換 → 秘匿マスク → speechd へ POST。kai_trace とイベント捕捉基盤を共有 | `plugins/kai_narrator/`                             | M3                          |
-| 3   | speechd       | 独立プロセス         | 発話・字幕キュー（F-8〜F-10）。TTS 呼出・null-sink 再生・OBS 字幕更新・縮退・アバター通知。同期の正典                                                         | `kai-services/speechd/`                             | M2                          |
-| 4   | mac-aquestalk | 独立プロセス（Mac）  | AquesTalk10 合成 HTTP サービス（`POST /synthesize` → WAV）。Tailscale bind、launchd 常駐                                                                      | `kai-services/mac-aquestalk/`                       | M2                          |
-| 5   | streaming     | 独立プロセス + skill | X(dummy) + OBS + RTMP のセットアップ・制御（F-6）。obs-websocket 制御は skill から                                                                            | `kai-services/streaming/` + `skills/kai/broadcast/` | M0/M4                       |
-| 6   | avatar        | 独立プロセス         | PuruPuruPNGTuber オーバーレイ（F-11/11b）。口パクは null-sink monitor の仮想マイク駆動                                                                        | `kai-services/avatar/`                              | M2ストレッチ〜ポストMVP     |
-| 7   | kai/workloop  | skill + cron ジョブ  | 自律ループの 1 tick（F-1〜F-4, F-28/29）。GitHub から作業導出 → 完遂 or idle-play                                                                             | `skills/kai/workloop/`                              | フェーズ1（MVP は手動指示） |
-| 8   | kai/review    | skill                | 隔離レビューの手順書（F-5）。delegate_task の子が使用。read-only 原則                                                                                         | `skills/kai/review/`                                | フェーズ1                   |
-| 9   | kai/retro     | skill + cron ジョブ  | 振り返り（F-30）。トレース分析 → 日報・改善提案                                                                                                               | `skills/kai/retro/`                                 | ポストMVP                   |
-| 10  | kai persona   | skin + コンテキスト  | 「多脚思考 AI」人格・ブランディング。narrator の auxiliary プロンプトにも同一ペルソナを注入                                                                   | skin YAML                                           | M1                          |
-| 11  | kai config    | config.yaml / .env   | provider（codex/claude/local）、`auxiliary.narration`、cron、speechd エンドポイント等。機密のみ .env                                                          | `config.yaml`                                       | M1                          |
-| 12  | youtube_live  | plugin (platform)    | ライブチャット入出力（F-14〜F-16）。返信も speechd へ                                                                                                         | `plugins/platforms/youtube_live/`                   | フェーズ4                   |
+| #   | 名前             | 種別                 | 責務                                                                                                                                                          | 配置                                                | 時期                        |
+| --- | ---------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------- |
+| 1   | kai_trace        | plugin               | 全事象ロギング（F-22）。hook で捕捉 → 秘匿マスク → JSONL 追記 + SQLite(FTS5) インデックス                                                                     | `plugins/kai_trace/`                                | M1                          |
+| 2   | kai_narrator     | plugin               | 実況（F-7）。hook 観測 → キュー → 背景スレッドで auxiliary `narration`（ローカル LLM）変換 → 秘匿マスク → speechd へ POST。kai_trace とイベント捕捉基盤を共有 | `plugins/kai_narrator/`                             | M3                          |
+| 3   | speechd          | 独立プロセス         | 発話・字幕キュー（F-8〜F-10）。TTS 呼出・null-sink 再生・**字幕 SSE 配信**・縮退。同期の正典                                                                  | `kai-services/speechd/`                             | M2 ✅                       |
+| 4   | aquestalk-server | 独立プロセス（Mac）  | 汎用日本語 TTS。生テキスト → koe 変換（kuromoji）→ AquesTalk10 合成 → 文単位 NDJSON ストリーム。launchd 常駐、他ツールからも再利用可                          | `kai-services/aquestalk-server/`                    | M2 ✅                       |
+| 5   | streaming        | 独立プロセス + skill | X(dummy) + OBS + RTMP のセットアップ・制御（F-6）。obs-websocket 制御は skill から                                                                            | `kai-services/streaming/` + `skills/kai/broadcast/` | M0/M4                       |
+| 6a  | kai-overlay      | 独立プロセス         | 配信オーバーレイ（透過 Chromium）。speechd の字幕 SSE を購読して描画。将来アバター/コメント/進捗も集約                                                        | `kai-services/overlay/`                             | M2 ✅                       |
+| 6b  | avatar           | （overlay に統合）   | PuruPuruPNGTuber（F-11/11b）。kai-overlay に組み込む方針。口パクは null-sink monitor 駆動                                                                     | `kai-services/overlay/`                             | ポストMVP                   |
+| 7   | kai/workloop     | skill + cron ジョブ  | 自律ループの 1 tick（F-1〜F-4, F-28/29）。GitHub から作業導出 → 完遂 or idle-play                                                                             | `skills/kai/workloop/`                              | フェーズ1（MVP は手動指示） |
+| 8   | kai/review       | skill                | 隔離レビューの手順書（F-5）。delegate_task の子が使用。read-only 原則                                                                                         | `skills/kai/review/`                                | フェーズ1                   |
+| 9   | kai/retro        | skill + cron ジョブ  | 振り返り（F-30）。トレース分析 → 日報・改善提案                                                                                                               | `skills/kai/retro/`                                 | ポストMVP                   |
+| 10  | kai persona      | skin + コンテキスト  | 「多脚思考 AI」人格・ブランディング。narrator の auxiliary プロンプトにも同一ペルソナを注入                                                                   | skin YAML                                           | M1                          |
+| 11  | kai config       | config.yaml / .env   | provider（codex/claude/local）、`auxiliary.narration`、cron、speechd エンドポイント等。機密のみ .env                                                          | `config.yaml`                                       | M1                          |
+| 12  | youtube_live     | plugin (platform)    | ライブチャット入出力（F-14〜F-16）。返信も speechd へ                                                                                                         | `plugins/platforms/youtube_live/`                   | フェーズ4                   |
 
 **命名規約:** hermes plugin は `plugins/kai_<name>/`（アンダースコア）、skill は `skills/kai/<name>/`、独立プロセスは `kai-services/<name>/`。すべて**新規ディレクトリの追加のみ**で、upstream ファイルと衝突しない。
 
@@ -112,35 +114,38 @@
 
 ## 4. 発話・字幕同期メカニズム（F-10 の正典）
 
-speechd は FIFO 単一コンシューマで**1 ビートずつ直列処理**する（発話の重なりなし）。
+> **実装確定（M2, 2026-07-04）:** 字幕は当初案の「OBS 字幕テキストソース（obs-websocket 更新）」ではなく、**Web オーバーレイ + SSE 方式**を採用した（オーナー判断）。理由: 汎用性——字幕・アバター・コメント・進捗を1枚の Web ページ（overlay）に集約でき、OBS ソースを増やさずに拡張できる。obs-websocket 5.x はヘッドレス GNOME でサーバー起動しない問題もあった。overlay は透過 Chromium でデスクトップに重ね、OBS の画面キャプチャ（XSHM）に自然に入る（PuruPuruPNGTuber アバターと同じ仕組み）。
+
+speechd は FIFO 単一コンシューマで**1 発話ずつ直列処理**する（発話の重なりなし）。TTS は Mac の **aquestalk-server**（汎用日本語 TTS、生テキスト → koe 変換 → 合成 → **文単位 NDJSON ストリーミング**）を呼ぶ。字幕は **speechd の SSE（`GET /events`）** で配信し、**kai-overlay**（透過 Chromium）が購読して描画する。
 
 **Enqueue API:**
 
 ```jsonc
-POST http://127.0.0.1:8200/say
+POST http://127.0.0.1:8900/say
 {
-  "beat_id": "uuid",              // speechd が未指定なら採番
-  "session_id": "cron_kai-tick_20260703T120000",
-  "work_thread_id": "kai-agent#123",   // Issue/PR 由来。なければ null
-  "source": "agent_response" | "narrator" | "chat_reply",
+  "text": "テストの失敗箇所を確認してるよ。",  // 生の日本語。speechd がマスク、Mac 側が koe 変換
+  "voice": "F1",                  // 省略可（AquesTalk 声質）
+  "speed": 120,                   // 省略可
+  "source": "agent_response" | "narrator" | "chat_reply",  // 省略可
+  "emotion": "focused",           // 省略可。SSE で overlay に中継（将来アバター用）
   "priority": "normal" | "low",   // low は滞留時に drop 可
-  "display_text": "テストの失敗箇所を確認してるよ。",  // 字幕用（技術トークンは英語のまま）
-  "tts_text": "てすとの しっぱいかしょを かくにんしてるよ。",  // 読み上げ用（省略時 display_text）
-  "emotion": "focused"            // 7 種。avatar へ中継
+  "session_id": "...", "work_thread_id": "..."  // 相関 ID（省略可）
 }
-→ 202 {"queued": true, "beat_id": "...", "queue_depth": 2}
+→ 202 {"queued": true, "queue_depth": 2}   // 重複時 {"queued": false, "reason": "duplicate"}
 ```
 
-**ビート処理手順:**
+**字幕 SSE（`GET http://127.0.0.1:8900/events`、text/event-stream）:** 各イベント `data: {"type":"subtitle","text":"表示文","emotion":"..."}`。空 text はクリア。新規購読者には現在字幕を即送（late-join）。keep-alive コメントを 15 秒間隔。
 
-1. **秘匿マスク**（producer 側でも実施済み。二層防御）
-2. mac-aquestalk へ合成要求（タイムアウト 3 秒）→ WAV + duration 取得
-3. **同一時点で同時発行:** (a) obs-websocket で字幕テキストソースを `display_text` に更新、(b) WAV を null-sink へ再生開始、(c) avatar へ `{beat_id, emotion}` を通知
-4. **字幕クリアは再生プロセスの終了を一次トリガー**とする。WAV duration は watchdog（残留防止の上限）と口パク用メタデータに使う
-5. **縮退（TTS 不達）:** 音声をスキップし、字幕のみを文字数ベースの表示時間 `max(2.0, min(8.0, len(display_text)/8.5))` 秒表示してクリア。**配信は止めない**
-6. 各ビートの `speech_started / speech_finished / speech_failed / subtitle_cleared` を相関 ID つきでトレースシンクへ記録（F-22 と F-10 の検証が同じ ID で追える）
+**発話処理手順（1 件）:**
 
-**キュー制御:** 重複抑制（直近 N 件と同文なら drop）、最短発話間隔、滞留時は `priority: low`（narrator のつなぎ実況）から drop。字幕は常に 1 件のみ・履歴なし（F-9）。
+1. **秘匿マスク**を text に適用（トークン形式 + 環境変数の秘密値。producer 側と二層防御）
+2. Mac aquestalk-server へストリーミング合成要求（接続 3 秒・全体 30 秒）→ 文単位に NDJSON で WAV 受信
+3. **各文について:** (a) SSE で字幕表示イベントを push、(b) WAV を null-sink（kai_speaker）へ `paplay` で**同期再生**、(c)（将来）avatar へ emotion 中継
+4. **字幕クリアは再生プロセス（paplay）の終了を一次トリガー**とする（再生完了 → SSE でクリアイベント）
+5. **縮退（TTS 不達 / 個別文の合成失敗）:** 音声をスキップし、字幕のみを文字数ベースの表示時間 `max(2.0, min(8.0, len(text)/8.5))` 秒表示してクリア。**配信は止めない**（実機検証済み: TTS 停止時に `speech_failed(tts_unreachable)` をトレースし字幕のみ表示）
+6. 各発話の `speech_started / speech_finished / speech_failed` を相関 ID つきで kai_trace JSONL へ記録（F-22 と F-10 の検証が同じ ID で追える）
+
+**キュー制御:** 重複抑制（直近と同文なら drop）、滞留時は `priority: low`（narrator のつなぎ実況）から drop。字幕は常に 1 件のみ・履歴なし（F-9）。
 
 ---
 
@@ -168,14 +173,13 @@ POST http://127.0.0.1:8200/say
 
 ### 5.2 ポート割当（すべて localhost / Tailscale 内。公開ポートなし）
 
-| ポート   | サービス                    | bind                    |
-| -------- | --------------------------- | ----------------------- |
-| 8200     | speechd `/say` ほか         | 127.0.0.1               |
-| 8300     | avatar 制御（表情 WS 等）   | 127.0.0.1               |
-| 8100     | mac-aquestalk `/synthesize` | Mac の Tailscale IP     |
-| 4455     | obs-websocket               | 127.0.0.1               |
-| 5900     | x11vnc（リモート GUI）      | サーバーの Tailscale IP |
-| （外部） | ローカル LLM `/v1`          | Windows の Tailscale IP |
+| ポート   | サービス                       | bind                             |
+| -------- | ------------------------------ | -------------------------------- |
+| 8900     | speechd `/say` `/events`(SSE)  | 127.0.0.1                        |
+| 8300     | avatar 制御（表情 WS 等）      | 127.0.0.1                        |
+| 8890     | aquestalk-server `/synthesize` | Mac の 0.0.0.0（Tailscale 経由） |
+| 5900     | x11vnc（リモート GUI）         | サーバーの Tailscale IP          |
+| （外部） | ローカル LLM `/v1`             | Windows の Tailscale IP          |
 
 ### 5.3 秘匿情報
 

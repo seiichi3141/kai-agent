@@ -1,0 +1,25 @@
+# kai 配信オーバーレイ（透過 Chromium）を GNOME/X11 セッション上に常駐表示する。
+# ~/.config/systemd/user/ に配置して systemctl --user enable --now kai-overlay。
+# 透過には --enable-transparent-visuals --disable-gpu が必須（GNOME/Mutter, X11 で確認済み）。
+[Unit]
+Description=kai overlay (transparent Chromium subtitle/avatar layer)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/bin/sh -c 'until DISPLAY=:0 xdpyinfo >/dev/null 2>&1; do sleep 1; done'
+ExecStart=/snap/bin/chromium \
+  --app=file:///home/kai/kai-agent/kai-services/overlay/index.html \
+  --class=kai-overlay \
+  --user-data-dir=/home/kai/.config/kai/overlay-profile \
+  --enable-transparent-visuals --disable-gpu \
+  --window-size=1920,1080 --window-position=0,0 \
+  --no-first-run --disable-features=Translate --disable-infobars
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

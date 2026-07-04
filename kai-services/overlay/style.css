@@ -1,0 +1,62 @@
+/* kai 配信オーバーレイ: 背景完全透過。
+ * デスクトップ全体（1920x1080）を覆う透過ウィンドウとして Chromium で開く
+ * 前提（show-overlay.sh 参照）。html/body に不透明な背景を絶対に付けないこと。
+ */
+
+html,
+body {
+  background: transparent;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#subtitle-layer {
+  position: fixed;
+  left: 50%;
+  bottom: 6%;
+  transform: translateX(-50%);
+  width: 90vw;
+  max-width: 1600px;
+  text-align: center;
+  pointer-events: none; /* オーバーレイはクリックを透過させる（配信操作の邪魔をしない） */
+}
+
+#subtitle {
+  display: inline-block;
+  font-family:
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Noto Sans",
+    sans-serif;
+  font-weight: 700;
+  font-size: 48px;
+  line-height: 1.45;
+  color: #fff;
+  white-space: pre-wrap;
+  word-break: break-word;
+
+  /* 縁取り: -webkit-text-stroke は角が丸まりがちなので text-shadow の
+   * 多重指定と併用して太めの黒縁に見せる。 */
+  -webkit-text-stroke: 3px #000;
+  paint-order: stroke fill;
+  text-shadow:
+    -2px -2px 3px #000,
+    2px -2px 3px #000,
+    -2px 2px 3px #000,
+    2px 2px 3px #000,
+    0 0 10px rgba(0, 0, 0, 0.8);
+
+  opacity: 0;
+  transition: opacity 200ms ease-in-out;
+}
+
+#subtitle.visible {
+  opacity: 1;
+}

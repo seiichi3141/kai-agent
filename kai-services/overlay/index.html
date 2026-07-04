@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, height=1080, initial-scale=1" />
+    <title>kai overlay</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!--
+      kai 配信オーバーレイ（背景完全透過）。
+      デスクトップに透過ウィンドウで重ねて OBS の画面キャプチャに含める前提。
+      設計: docs/kai/design/00-system.md §4。詳細は kai-services/overlay/README.md。
+
+      現在は字幕のみ。将来アバター・コメント・進捗も同じページに追加できる
+      よう、レイヤーごとに div を分けてある（#subtitle-layer が字幕、
+      他のレイヤーは今後 app.js が同じ /events から受けるイベント種別に
+      応じて追加していく想定）。
+    -->
+    <div id="subtitle-layer">
+      <div id="subtitle"></div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
