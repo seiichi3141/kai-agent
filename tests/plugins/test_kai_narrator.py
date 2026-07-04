@@ -209,6 +209,26 @@ def test_maybe_narrate_swallows_llm_failure(narrator_mod, narrator, monkeypatch)
     assert not sent
 
 
+# --- atexit drain ----------------------------------------------------------------
+
+
+def test_drain_at_exit_sends_pending_response(narrator_mod, narrator, monkeypatch):
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    narrator.push_response("最後の完了報告", session_id="s1")
+    narrator._drain_at_exit()
+    assert len(sent) == 1
+    assert sent[0]["text"] == "最後の完了報告"
+    assert sent[0]["source"] == "agent_response"
+
+
+def test_drain_at_exit_noop_when_empty(narrator_mod, narrator, monkeypatch):
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    narrator._drain_at_exit()
+    assert not sent
+
+
 # --- hooks ----------------------------------------------------------------------
 
 

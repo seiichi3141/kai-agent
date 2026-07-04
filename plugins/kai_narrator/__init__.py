@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
@@ -247,9 +248,11 @@ class _Narrator:
         self._events_lock = threading.Lock()
         self._last_say_ts: float = 0.0
         self._last_text: str = ""
+        self._busy = False  # ワーカーがアイテム処理中か（atexit drain の同期用）
         if start_thread:  # テストでは False にして各メソッドを直接呼ぶ
             self._thread = threading.Thread(target=self._run, name="kai-narrator", daemon=True)
             self._thread.start()
+            atexit.register(self._drain_at_exit)
 
     # -- hook 側（同期・即 return）--
 
@@ -273,12 +276,37 @@ class _Narrator:
             except queue.Empty:
                 item = None
             try:
+                self._busy = item is not None
                 if item is not None and item.get("kind") == "response":
                     self._handle_response(item)
                 elif item is None:
                     self._maybe_narrate()
             except Exception as e:  # ワーカーは死なせない
                 print(f"[kai_narrator] WARN worker error: {e}")
+            finally:
+                self._busy = False
+
+    def _drain_at_exit(self) -> None:
+        """プロセス終了時に未送出の応答発話を同期送出する。
+
+        CLI 一発実行（hermes -z）では最終応答の post_llm_call 直後にプロセスが
+        終了し、daemon ワーカースレッドが発話を speechd へ送る前に殺される。
+        atexit でキューを排出して、最後の発話（完了報告）を取りこぼさない。
+        実況（ツールイベント）は応答に置き換えられたものとして捨てる。
+        """
+        deadline = time.monotonic() + 8.0
+        # ワーカーが処理中ならまず待つ（同一アイテムの二重送出はキューが防ぐ）
+        while (self._busy or not self._q.empty()) and time.monotonic() < deadline:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                time.sleep(0.1)
+                continue
+            try:
+                if item.get("kind") == "response":
+                    self._handle_response(item)
+            except Exception:
+                pass
 
     def _say(self, text: str, source: str, priority: str, session_id: str = "") -> None:
         text = _mask(text).strip()
