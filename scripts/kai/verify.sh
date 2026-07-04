@@ -122,6 +122,94 @@ kai_shell_scripts() {
   find scripts -maxdepth 1 -type f -name 'kai-*.sh' 2>/dev/null | sort
 }
 
+# ── PR モード（FR-L2 後半 / L3）─────────────────────────────────────────────
+# 「完了」を PR の機械状態（CI 緑かつ mergeable）まで引き上げる。エージェントの
+# 自己申告ではなく gh で PR の実状態を確認する（nokonora の run.sh 相当）。
+PR_TIMEOUT_MIN="${PR_TIMEOUT_MIN:-15}"  # CI 完了待ちの上限（分）
+PR_POLL_SEC="${PR_POLL_SEC:-20}"        # ポーリング間隔（秒）
+
+# kai_repo: origin の GitHub リポジトリ（owner/repo）を導出する。gh は remote 曖昧性で
+# upstream（NousResearch/hermes-agent）を誤選択するため、常に --repo で明示する。
+kai_repo() {
+  local url
+  url="$(git config --get remote.origin.url 2>/dev/null)"
+  # git@github.com:owner/repo.git / https://github.com/owner/repo(.git) の両形式に対応
+  printf '%s' "${url}" | sed -E 's#^.*github\.com[:/]##; s#\.git$##'
+}
+
+run_pr_mode() {
+  require_tool gh "https://cli.github.com/ （認証: gh auth login）" || return 1
+  local repo pr="$1"
+  repo="$(kai_repo)"
+  if [[ -z "${repo}" ]]; then
+    echo "❌ origin の GitHub リポジトリを特定できません"
+    return 1
+  fi
+  if [[ -z "${pr}" ]]; then
+    # --repo 指定時は gh pr view がブランチ推論しないため、現在のブランチ名で PR を引く。
+    local branch
+    branch="$(git branch --show-current 2>/dev/null)"
+    if [[ -n "${branch}" ]]; then
+      pr="$(gh pr list --repo "${repo}" --head "${branch}" --state open \
+        --json number -q '.[0].number' 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${pr}" ]]; then
+    echo "❌ PR を特定できません。現在のブランチに open な PR が無いなら番号を渡してください: verify.sh --pr <N>"
+    return 1
+  fi
+  echo "▶ PR #${pr}（${repo}）の実状態を検証します（自己申告に頼らず gh で確認）"
+
+  # 1) CI が完了するまで待つ（PENDING の間はポーリング。偽陰性=「まだ緑じゃない」防止）。
+  local deadline=$((SECONDS + PR_TIMEOUT_MIN * 60)) total pending
+  while :; do
+    total="$(gh pr checks "${pr}" --repo "${repo}" --json bucket -q 'length' 2>/dev/null || echo -1)"
+    if [[ "${total}" -le 0 ]]; then
+      echo "  （チェック未登録。kai CI の起動待ち...）"
+    else
+      pending="$(gh pr checks "${pr}" --repo "${repo}" --json bucket \
+        -q '[.[]|select(.bucket=="pending")]|length' 2>/dev/null || echo 0)"
+      echo "  checks=${total} pending=${pending}"
+      [[ "${pending}" -eq 0 ]] && break
+    fi
+    if [[ "${SECONDS}" -ge "${deadline}" ]]; then
+      echo "❌ CI が ${PR_TIMEOUT_MIN} 分以内に完了しませんでした（未確認＝失敗として扱う）"
+      return 1
+    fi
+    sleep "${PR_POLL_SEC}"
+  done
+
+  # 2) 失敗した checks が無いこと（fail / cancel を赤とみなす。pass / skipping は許容）。
+  if gh pr checks "${pr}" --repo "${repo}" --json name,bucket \
+      -q '.[]|select(.bucket=="fail" or .bucket=="cancel")|"  ❌ \(.name): \(.bucket)"' 2>/dev/null \
+      | grep -q .; then
+    echo "❌ 失敗した CI チェックがあります:"
+    gh pr checks "${pr}" --repo "${repo}" --json name,bucket \
+      -q '.[]|select(.bucket=="fail" or .bucket=="cancel")|"  ❌ \(.name): \(.bucket)"' 2>/dev/null
+    return 1
+  fi
+  echo "  ✅ CI 緑（fail/cancel なし）"
+
+  # 3) mergeable であること（コンフリクト / BEHIND を排除）。
+  local mergeable
+  mergeable="$(gh pr view "${pr}" --repo "${repo}" --json mergeable -q .mergeable 2>/dev/null)"
+  echo "  mergeable=${mergeable}"
+  if [[ "${mergeable}" != "MERGEABLE" ]]; then
+    echo "❌ PR が MERGEABLE ではありません（コンフリクト等）。main 追従・解消が必要です。"
+    return 1
+  fi
+
+  echo ""
+  echo "✅ PR #${pr} は CI 緑かつ MERGEABLE。merge-ready です（マージは人間 or 承認済み手順で）。"
+  return 0
+}
+
+# ── --pr モード ──────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--pr" ]]; then
+  run_pr_mode "${2:-}"
+  exit $?
+fi
+
 # ── --list モード ────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--list" ]]; then
   echo "kai verify.sh が実行する検証器:"
