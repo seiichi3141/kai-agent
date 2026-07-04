@@ -202,7 +202,7 @@ POST http://127.0.0.1:8900/say
 3. **hook 内で同期 LLM / HTTP 呼び出し禁止**（ADR-1 の実装ルール）。enqueue + 背景スレッド。
 4. **optional 機能の失敗はループ・配信を止めない**（warn + 縮退）。
 5. **GitHub が唯一の作業状態**。ローカルに作業キューの複製・ミラーを持たない。
-6. upstream 追従: `upstream/main` → `main`（ff）→ `kai/main` へ merge。kai ファイルは新規ディレクトリのみなのでコンフリクトは原則発生しない。
+6. upstream 追従: `upstream/main`（remote）→ `upstream`（ブランチ, ff）→ `main` へ merge。kai ファイルは新規ディレクトリのみなのでコンフリクトは原則発生しない。
 
 ---
 

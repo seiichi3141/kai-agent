@@ -30,7 +30,7 @@
 | Beat 同期・表情・リアクション・BGM                                           | 簡易版（発話と字幕の同時表示）で代替                                     |
 | X 運用・ニュース収集・視聴者プロファイル・合議制                             | フェーズ4-5                                                              |
 | 配信の自動スケジュール（cron 起動）                                          | MVP は手動開始で可。M6 以降                                              |
-| upstream 自動追従                                                            | 当面は手動 merge（`upstream/main` → `main` → `kai/main`）                |
+| upstream 自動追従                                                            | 当面は手動 merge（`upstream/main` → `upstream` → `main`）                |
 
 ### 1.3 アーキテクチャ（MVP 時点）
 
@@ -39,7 +39,7 @@
 │                                                                      │
 │  UTM VM「kai-vm」（Ubuntu 24.04 Desktop arm64 / 6CPU / 12GB）         │
 │  │  本物の Ubuntu GNOME デスクトップ（X11・自動ログイン・1920x1080）  │
-│  │  ├─ kai（hermes fork, kai/main）… M1 でここに導入予定             │
+│  │  ├─ kai（hermes fork, main）… M1 でここに導入予定                 │
 │  │  ├─ OBS … 画面キャプチャ(XSHM) → RTMPS → YouTube                  │
 │  │  ├─ 音声: PipeWire null-sink kai_speaker（デフォルトシンク）      │
 │  │  └─ Chromium（snap・本物）                                        │
@@ -83,7 +83,7 @@ kai 固有コードの配置は fork 運用原則に従う（コア無改変）:
 
 **目的:** hermes fork がサーバー上で 3 つの LLM バックエンドと会話できる状態。
 
-- `kai/main` をサーバーへ clone、venv 構築、`hermes` セットアップ
+- `main` をサーバーへ clone、venv 構築、`hermes` セットアップ
 - `config.yaml` で LLM 接続を確認:
   - ローカル LLM: `provider: custom` + `base_url: http://<windows-tailscale-ip>:<port>/v1`
   - Claude: Anthropic API（`CLAUDE_CODE_OAUTH_TOKEN` 再利用）
