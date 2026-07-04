@@ -1,0 +1,15 @@
+{
+  "name": "aquestalk-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mac 上で常駐する汎用日本語 TTS HTTP サーバー（AquesTalk10 を使用）",
+  "type": "module",
+  "main": "src/server.mjs",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "kuromoji": "^0.1.2"
+  }
+}
