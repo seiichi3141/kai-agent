@@ -131,13 +131,15 @@ cmd_status() {
     return 0
   fi
 
-  local stream_json stream_rc record_json record_rc
+  local stream_json stream_rc record_json record_rc scene_json scene_rc
   stream_rc=0
   record_rc=0
+  scene_rc=0
   stream_json="$("${OBSWS_PYTHON}" "${OBSWS}" GetStreamStatus 2>&1)" || stream_rc=$?
   record_json="$("${OBSWS_PYTHON}" "${OBSWS}" GetRecordStatus 2>&1)" || record_rc=$?
+  scene_json="$("${OBSWS_PYTHON}" "${OBSWS}" GetCurrentProgramScene 2>&1)" || scene_rc=$?
 
-  python3 - "${stream_rc}" "${stream_json}" "${record_rc}" "${record_json}" <<'PY'
+  python3 - "${stream_rc}" "${stream_json}" "${record_rc}" "${record_json}" "${scene_rc}" "${scene_json}" <<'PY'
 import json
 import sys
 
@@ -181,6 +183,18 @@ stream_rc = int(sys.argv[1])
 stream_raw = sys.argv[2]
 record_rc = int(sys.argv[3])
 record_raw = sys.argv[4]
+scene_rc = int(sys.argv[5])
+scene_raw = sys.argv[6]
+
+if scene_rc == 0:
+    scene = parse_payload(scene_raw)
+    scene_name = str(scene.get("currentProgramSceneName") or "").strip()
+    if scene_name:
+        print(f"シーン: {scene_name}")
+    else:
+        print("シーン: 状態取得失敗（シーン名が空です）")
+else:
+    print(f"シーン: 状態取得失敗（{error_summary(scene_raw)}）")
 
 if stream_rc == 0:
     stream = parse_payload(stream_raw)
