@@ -1,0 +1,17 @@
+# koe-bridge（hermes auxiliary → OpenAI 互換中継）。systemd --user テンプレート。
+# install.sh が @REPO_DIR@ を実パスに置換して ~/.config/systemd/user/ に配置する。
+[Unit]
+Description=kai koe-bridge (OpenAI-compatible relay to hermes auxiliary LLM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=@REPO_DIR@
+Environment=KOE_BRIDGE_PORT=8930
+Environment=KOE_BRIDGE_BIND=0.0.0.0
+ExecStart=@REPO_DIR@/.venv/bin/python3 @REPO_DIR@/kai-services/koe-bridge/koe_bridge.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
