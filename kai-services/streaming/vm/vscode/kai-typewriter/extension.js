@@ -64,8 +64,8 @@ async function setDocumentText(editor, text) {
   });
 }
 
-/** 1 ファイル分の編集をタイピング再生する。 */
-async function playFile(filePath) {
+/** 1 ファイル分の編集をタイピング再生する。action は "add"（新規）か "update"（更新）。 */
+async function playFile(filePath, action) {
   let target;
   try {
     target = fs.readFileSync(filePath, "utf8"); // ディスク上の最終内容が正
@@ -76,12 +76,15 @@ async function playFile(filePath) {
   const doc = await vscode.workspace.openTextDocument(filePath);
   const editor = await vscode.window.showTextDocument(doc, { preview: false });
 
-  const base = snapshots.has(filePath) ? snapshots.get(filePath) : editor.document.getText();
+  // 新規作成（action=add）は空から全文をタイプする。更新はスナップショット（無ければ
+  // 開いた時点の内容）との差分だけタイプする（Issue #32: 新規ファイルが一気に
+  // 現れてタイプ演出が見えない不具合の修正）。
+  const base = action === "add" ? "" : (snapshots.has(filePath) ? snapshots.get(filePath) : editor.document.getText());
   snapshots.set(filePath, target);
 
   const { start, inserted } = diffRegion(base, target);
-  // 差分なし・巨大すぎる差分（初回の全文など）は「開いて該当位置を見せる」だけ
-  if (inserted.length === 0 || inserted.length > 20000 || base === target) {
+  // 差分なし・極端に巨大な差分（自動生成の大量出力など）は「開いて見せる」だけ
+  if (inserted.length === 0 || inserted.length > 100000 || base === target) {
     const pos = editor.document.positionAt(Math.min(start, editor.document.getText().length));
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
     if (editor.document.getText() !== target) {
@@ -133,10 +136,10 @@ async function drainQueue() {
   playing = true;
   try {
     while (pending.length > 0) {
-      const file = pending.shift();
+      const { path: file, action } = pending.shift();
       if (statusBar) statusBar.text = `$(edit) kai: ${file.split("/").pop()}`;
       try {
-        await playFile(file);
+        await playFile(file, action);
       } catch (e) {
         console.error("[kai-typewriter] play error:", e);
       }
@@ -163,10 +166,14 @@ function activate(context) {
     req.on("end", () => {
       try {
         const data = JSON.parse(body || "{}");
-        const files = Array.isArray(data.files) ? data.files : [];
-        for (const f of files) {
-          if (typeof f === "string" && f.startsWith("/") && !pending.includes(f)) {
-            pending.push(f);
+        // 新形式: edits=[{path, action}]。旧形式 files=[path] は update 扱い
+        const edits = Array.isArray(data.edits)
+          ? data.edits
+          : (Array.isArray(data.files) ? data.files.map((p) => ({ path: p, action: "update" })) : []);
+        for (const e of edits) {
+          const path = e && e.path;
+          if (typeof path === "string" && path.startsWith("/") && !pending.some((q) => q.path === path)) {
+            pending.push({ path, action: e.action === "add" ? "add" : "update" });
           }
         }
         res.writeHead(200, { "Content-Type": "application/json" });
