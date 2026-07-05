@@ -1,0 +1,6 @@
+name: kai_director
+version: 0.1.0
+description: "kai 配信演出（Issue #8）。編集系ツールの対象ファイルを VSCode 拡張 kai-typewriter へ通知し、タイピング風に再生させる。"
+author: kai
+hooks:
+  - post_tool_call

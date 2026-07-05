@@ -1,0 +1,187 @@
+/**
+ * kai-typewriter — kai（hermes）の編集を受信し、タイピング風に再生する配信演出拡張。
+ *
+ * 仕組み（設計は Issue #8 / plugins/kai_director）:
+ *   1. hermes 側 plugin kai_director が編集完了後（post_tool_call）に
+ *      POST http://127.0.0.1:8920/edit {"files": ["/abs/path", ...]} を送る
+ *   2. 本拡張は対象ファイルを開き、「前回スナップショット（無ければ現エディタ内容）」と
+ *      「ディスク上の最新内容」の差分を求め、変更部分をいったん巻き戻してから
+ *      1 文字ずつ挿入してタイピングを再生する
+ *   3. 再生完了時点でエディタ内容 == ディスク内容になるため保存しても実害がない
+ *      （実ファイルは hermes が既に書き終えている。演出はエディタ側だけで完結）
+ *
+ * 安全側の原則: 再生はすべて best-effort。差分が取れない・イベントが溜まった等は
+ * 「該当ファイルを開いて見せるだけ」に縮退する。拡張の失敗が kai の作業や
+ * 実ファイルの内容を壊すことはない（最終状態は常にディスクの内容に収束させる）。
+ */
+
+"use strict";
+
+const http = require("http");
+const fs = require("fs");
+const vscode = require("vscode");
+
+/** @type {Map<string, string>} 最後に再生を終えた時点のファイル内容 */
+const snapshots = new Map();
+
+/** @type {string[]} 再生待ちファイルのキュー（直列再生） */
+const pending = [];
+let playing = false;
+let statusBar;
+
+function cfg() {
+  const c = vscode.workspace.getConfiguration("kaiTypewriter");
+  return {
+    port: c.get("port", 8920),
+    typeIntervalMs: c.get("typeIntervalMs", 24),
+    maxDurationMs: c.get("maxDurationMs", 5000),
+  };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 共通接頭辞・接尾辞を除いた変更領域を返す（文字単位） */
+function diffRegion(before, after) {
+  let start = 0;
+  const minLen = Math.min(before.length, after.length);
+  while (start < minLen && before[start] === after[start]) start++;
+  let endB = before.length;
+  let endA = after.length;
+  while (endB > start && endA > start && before[endB - 1] === after[endA - 1]) {
+    endB--;
+    endA--;
+  }
+  return { start, removed: before.slice(start, endB), inserted: after.slice(start, endA) };
+}
+
+/** ドキュメント全体を text に置き換える（差分適用の土台）。 */
+async function setDocumentText(editor, text) {
+  const doc = editor.document;
+  const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+  await editor.edit((eb) => eb.replace(fullRange, text), {
+    undoStopBefore: false,
+    undoStopAfter: false,
+  });
+}
+
+/** 1 ファイル分の編集をタイピング再生する。 */
+async function playFile(filePath) {
+  let target;
+  try {
+    target = fs.readFileSync(filePath, "utf8"); // ディスク上の最終内容が正
+  } catch {
+    return; // 削除された等 — 何もしない
+  }
+
+  const doc = await vscode.workspace.openTextDocument(filePath);
+  const editor = await vscode.window.showTextDocument(doc, { preview: false });
+
+  const base = snapshots.has(filePath) ? snapshots.get(filePath) : editor.document.getText();
+  snapshots.set(filePath, target);
+
+  const { start, inserted } = diffRegion(base, target);
+  // 差分なし・巨大すぎる差分（初回の全文など）は「開いて該当位置を見せる」だけ
+  if (inserted.length === 0 || inserted.length > 20000 || base === target) {
+    const pos = editor.document.positionAt(Math.min(start, editor.document.getText().length));
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    if (editor.document.getText() !== target) {
+      await setDocumentText(editor, target);
+      await editor.document.save();
+    }
+    return;
+  }
+
+  // 「変更前 + これから打つ部分の手前まで」の状態に巻き戻す
+  const prefix = target.slice(0, start);
+  const suffix = target.slice(start + inserted.length);
+  await setDocumentText(editor, prefix + suffix);
+
+  // 再生速度: 上限時間に収まるよう 1 打鍵あたりの文字数を調整。
+  // キューが溜まっているときはさらに倍速で追いつく
+  const { typeIntervalMs, maxDurationMs } = cfg();
+  const steps = Math.max(1, Math.floor(maxDurationMs / typeIntervalMs));
+  let chunk = Math.max(1, Math.ceil(inserted.length / steps));
+  if (pending.length > 0) chunk *= 4;
+
+  let typed = 0;
+  while (typed < inserted.length) {
+    const piece = inserted.slice(typed, typed + chunk);
+    const at = editor.document.positionAt(start + typed);
+    await editor.edit((eb) => eb.insert(at, piece), {
+      undoStopBefore: false,
+      undoStopAfter: false,
+    });
+    typed += piece.length;
+    const cursor = editor.document.positionAt(start + typed);
+    editor.selection = new vscode.Selection(cursor, cursor);
+    editor.revealRange(
+      new vscode.Range(cursor, cursor),
+      vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+    );
+    await sleep(typeIntervalMs);
+  }
+
+  // 収束の保証: 打鍵の合間に外部変更が挟まっても最終的にディスク内容へ揃える
+  if (editor.document.getText() !== target) {
+    await setDocumentText(editor, target);
+  }
+  await editor.document.save();
+}
+
+async function drainQueue() {
+  if (playing) return;
+  playing = true;
+  try {
+    while (pending.length > 0) {
+      const file = pending.shift();
+      if (statusBar) statusBar.text = `$(edit) kai: ${file.split("/").pop()}`;
+      try {
+        await playFile(file);
+      } catch (e) {
+        console.error("[kai-typewriter] play error:", e);
+      }
+    }
+  } finally {
+    playing = false;
+    if (statusBar) statusBar.text = "$(check) kai typewriter";
+  }
+}
+
+function activate(context) {
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  statusBar.text = "$(check) kai typewriter";
+  statusBar.show();
+  context.subscriptions.push(statusBar);
+
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== "/edit") {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const data = JSON.parse(body || "{}");
+        const files = Array.isArray(data.files) ? data.files : [];
+        for (const f of files) {
+          if (typeof f === "string" && f.startsWith("/") && !pending.includes(f)) {
+            pending.push(f);
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ queued: pending.length }));
+        void drainQueue();
+      } catch (e) {
+        res.writeHead(400).end(JSON.stringify({ error: String(e) }));
+      }
+    });
+  });
+  server.listen(cfg().port, "127.0.0.1");
+  context.subscriptions.push({ dispose: () => server.close() });
+  console.log(`[kai-typewriter] listening on 127.0.0.1:${cfg().port}`);
+}
+
+function deactivate() {}
+
+module.exports = { activate, deactivate, diffRegion };

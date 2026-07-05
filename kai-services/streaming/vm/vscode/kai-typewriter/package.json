@@ -1,0 +1,32 @@
+{
+  "name": "kai-typewriter",
+  "displayName": "kai typewriter",
+  "description": "kai (hermes) のファイル編集を受信し、タイピング風アニメーションでエディタに再生する配信演出拡張",
+  "version": "0.1.0",
+  "publisher": "kai",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "configuration": {
+      "title": "kai typewriter",
+      "properties": {
+        "kaiTypewriter.port": {
+          "type": "number",
+          "default": 8920,
+          "description": "編集通知を受ける HTTP ポート（127.0.0.1 のみ bind）"
+        },
+        "kaiTypewriter.typeIntervalMs": {
+          "type": "number",
+          "default": 24,
+          "description": "タイピング 1 打鍵あたりの間隔（ms）"
+        },
+        "kaiTypewriter.maxDurationMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "1 編集の再生時間の上限（超える場合は 1 打鍵あたりの文字数を増やして追いつく）"
+        }
+      }
+    }
+  }
+}
