@@ -157,7 +157,7 @@ def test_say_swallows_speechd_failure(narrator_mod, narrator, monkeypatch):
 def test_maybe_narrate_generates_and_posts_low_priority(narrator_mod, narrator, monkeypatch):
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events: "テストを実行中だよ")
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "テストを実行中だよ")
     narrator.push_tool_event({"tool": "terminal", "args": {"command": "pytest"}, "session_id": "s1"})
     narrator._maybe_narrate()
     assert len(sent) == 1
@@ -168,21 +168,78 @@ def test_maybe_narrate_generates_and_posts_low_priority(narrator_mod, narrator, 
 
 
 def test_maybe_narrate_respects_min_interval(narrator_mod, narrator, monkeypatch):
+    import time as _time
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events: "一回目")
-    narrator.push_tool_event({"tool": "a", "args": {}})
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "一回目")
+    # 非旗艦イベント（ただの read）。last_say=0 なので一回目は間隔経過扱いで実況
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
     narrator._maybe_narrate()
-    # 直後はインターバル未経過なので実況しない
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events: "二回目")
-    narrator.push_tool_event({"tool": "b", "args": {}})
+    assert len(sent) == 1
+    # 直後（インターバル未経過）は非旗艦イベントなら実況しない
+    narrator._last_say_ts = _time.monotonic()
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "二回目")
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "b.py"}})
+    narrator._maybe_narrate()
+    assert len(sent) == 1  # 間隔で抑制。イベントは溜めておく
+    assert len(narrator._events) == 1
+
+
+def test_maybe_narrate_flagship_bypasses_interval(narrator_mod, narrator, monkeypatch):
+    import time as _time
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "テスト通ったよ")
+    narrator._last_say_ts = _time.monotonic()  # 直前に発話済み（間隔未経過）
+    # verify.sh は旗艦イベント → 間隔を無視して即実況
+    narrator.push_tool_event({"tool": "terminal", "args": {"command": "scripts/kai/verify.sh"}})
     narrator._maybe_narrate()
     assert len(sent) == 1
 
 
+def test_maybe_narrate_error_is_flagship(narrator_mod, narrator, monkeypatch):
+    import time as _time
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "エラー出たよ")
+    narrator._last_say_ts = _time.monotonic()
+    narrator.push_tool_event({"tool": "terminal", "args": {"command": "ls"}, "status": "error"})
+    narrator._maybe_narrate()
+    assert len(sent) == 1  # エラーは間隔無視で即報告
+
+
+def test_maybe_narrate_skip_is_not_spoken(narrator_mod, narrator, monkeypatch):
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "SKIP")
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    narrator._maybe_narrate()
+    assert not sent  # SKIP は発話しない
+    assert len(narrator._recent_narrations) == 0
+
+
+def test_maybe_narrate_passes_context_and_recent(narrator_mod, narrator, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: None)
+
+    def _gen(events, context="", recent=None):
+        seen["context"] = context
+        seen["recent"] = list(recent or [])
+        return "いま README を書いてるよ、みんなに使い方を伝えたくて"
+    monkeypatch.setattr(narrator_mod, "_generate_narration", _gen)
+    narrator._context = "Issue #25 をやってるよ"
+    narrator._recent_narrations.append("さっきの実況")
+    narrator.push_tool_event({"tool": "write_file", "args": {"path": "README.md"}})
+    narrator._maybe_narrate()
+    assert seen["context"] == "Issue #25 をやってるよ"
+    assert seen["recent"] == ["さっきの実況"]
+    # 実況したテキストは recent に積まれる（次回の繰り返し判定に使う）
+    assert narrator._recent_narrations[-1].startswith("いま README")
+
+
 def test_maybe_narrate_noop_without_events(narrator_mod, narrator, monkeypatch):
     called = []
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events: called.append(1) or "x")
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: called.append(1) or "x")
     narrator._maybe_narrate()
     assert not called
 
@@ -191,7 +248,7 @@ def test_maybe_narrate_disabled(narrator_mod, monkeypatch):
     monkeypatch.setattr(narrator_mod, "_plugin_cfg", lambda: {"narration_enabled": False})
     n = narrator_mod._Narrator(start_thread=False)
     called = []
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events: called.append(1) or "x")
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: called.append(1) or "x")
     n.push_tool_event({"tool": "a", "args": {}})
     n._maybe_narrate()
     assert not called
@@ -201,12 +258,28 @@ def test_maybe_narrate_swallows_llm_failure(narrator_mod, narrator, monkeypatch)
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
 
-    def _boom(events):
+    def _boom(events, **kw):
         raise RuntimeError("llm down")
     monkeypatch.setattr(narrator_mod, "_generate_narration", _boom)
     narrator.push_tool_event({"tool": "a", "args": {}})
     narrator._maybe_narrate()  # raise しないこと
     assert not sent
+
+
+def test_is_flagship_and_is_skip(narrator_mod):
+    assert narrator_mod._is_flagship({"tool": "terminal", "args": {"command": "git commit -m x"}})
+    assert narrator_mod._is_flagship({"tool": "terminal", "args": {"command": "gh pr create"}})
+    assert narrator_mod._is_flagship({"tool": "terminal", "args": {"command": "ls"}, "status": "error"})
+    assert not narrator_mod._is_flagship({"tool": "read_file", "args": {"path": "a.py"}})
+    assert narrator_mod._is_skip("SKIP")
+    assert narrator_mod._is_skip("skip。")
+    assert not narrator_mod._is_skip("テスト通ったよ")
+
+
+def test_handle_response_captures_context(narrator_mod, narrator, monkeypatch):
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: None)
+    narrator._handle_response({"kind": "response", "text": "Issue #25 の実装を始めるよ"})
+    assert "Issue #25" in narrator._context
 
 
 # --- path shortening（Issue #9: フルパスを流さない）------------------------------
@@ -266,7 +339,7 @@ def test_heartbeat_narrates_running_tool(narrator_mod, narrator, monkeypatch):
     seen_events = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
     monkeypatch.setattr(narrator_mod, "_generate_narration",
-                        lambda events: seen_events.extend(events) or "CIの完了を待ってるよ")
+                        lambda events, **kw: seen_events.extend(events) or "CIの完了を待ってるよ")
     narrator.set_tool_running("terminal", {"command": "verify.sh --pr"}, session_id="s1")
     narrator._maybe_heartbeat()  # _last_say_ts=0 なのでインターバル経過扱い
     assert len(sent) == 1
