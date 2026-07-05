@@ -9,6 +9,7 @@
 #   broadcast.sh stop          # 配信停止（必要なら）→ OBS をクリーン終了
 #   broadcast.sh status        # OBS プロセス・配信・録画の状態（人間可読サマリ）
 #   broadcast.sh status --json # obs-websocket の生 JSON（調査用）
+#   broadcast.sh screenshot [出力パス] # 画面の PNG スクリーンショットを保存
 #   broadcast.sh record-start | record-stop   # 録画（配信に出さない検証用）
 #
 # 運用上の注意:
@@ -218,6 +219,16 @@ cmd_status_json() {
   fi
 }
 
+cmd_screenshot() {
+  local output_path output_dir
+  output_path="${1:-${HOME}/kai-screenshots/$(date +%Y%m%d-%H%M%S).png}"
+  output_dir="$(dirname "${output_path}")"
+
+  mkdir -p "${output_dir}"
+  scrot -o "${output_path}"
+  printf '%s\n' "${output_path}"
+}
+
 case "${1:-}" in
   start)        cmd_start ;;
   stream-start) cmd_stream_start ;;
@@ -234,10 +245,11 @@ case "${1:-}" in
         ;;
     esac
     ;;
+  screenshot)    cmd_screenshot "${2:-}" ;;
   record-start) "${OBSWS_PYTHON}" "${OBSWS}" StartRecord ;;
   record-stop)  "${OBSWS_PYTHON}" "${OBSWS}" StopRecord ;;
   *)
-    sed -n '2,16p' "${BASH_SOURCE[0]}"
+    sed -n '2,17p' "${BASH_SOURCE[0]}"
     exit 2
     ;;
 esac
