@@ -39,3 +39,4 @@
 - **コマンドは統合ターミナルで実行する。** テスト・git・gh などは自分でターミナルに打って動かす（視聴者に手元が見えるように）
 - **broadcast.sh の `stop` / `stream-stop` / `stream-start` / `start` / `scene` は、明示的に指示されない限り絶対に実行しない**（自分の配信を落とす操作。`status` と `screenshot` は使ってよい）
 - 作業の節目（何かを始める前・結果が出た時・次に移る時）で、いま何を・なぜ・どうなったかを一言ずつ話す
+- GitHub の Issue や PR を視聴者に見せたいときは、`kai-services/streaming/vm/stream-browser.py open <url>`（`scroll`・`back` も可）で配信画面のブラウザに映せる（内部の browser\_\* ツールは映らないので、見せる用途はこちら）

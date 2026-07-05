@@ -29,6 +29,11 @@ kai-vm（UTM / Ubuntu 24.04 Desktop arm64）上で動かす、配信ステージ
   - kai のファイル編集を受信し、VSCode 上でタイピング風アニメーションとして再生する配信演出拡張です。
   - `POST http://127.0.0.1:8920/edit` で編集済みファイル一覧を受け取り、最終的にはディスク上の内容へ収束する best-effort の演出として動きます。
 
+- `stream-browser.py`
+  - 配信画面に見えるブラウザ（headed Chromium）を kai が操作するための CLI です（Issue #11）。GitHub の Issue や PR を「視聴者に見せながら」確認するのに使います。
+  - `open <url>` / `scroll [down|up|top|bottom]` / `back` / `status` / `close`。CDP（remote-debugging-port 9222）で制御し、翻訳ポップアップや初回ダイアログを抑止して起動します。
+  - kai の browser\_\* ツールは headless（配信に映らない）ため、見せる用途はこちらを使います。
+
 ## 典型的な流れ
 
 ### 初回セットアップ
