@@ -13,6 +13,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 
+import { generateKoeLlm, sanitizeLlmKoe, ensureSentenceEnd, mapNonTagParts } from "./koe-llm.mjs";
+import { validateKoe } from "./koe-validate.mjs";
+
 const _require = createRequire(import.meta.url);
 
 function logWarn(message, meta) {
@@ -432,17 +435,58 @@ function convertKanaText(text) {
 }
 
 // ---------------------------------------------------------------------------
+// LLM 主経路（設計書 §5.2）
+// ---------------------------------------------------------------------------
+
+/**
+ * 環境変数から LLM 設定を読む。KOE_LLM_BASE_URL が空なら null（= ルールベースのみ）。
+ */
+function llmConfigFromEnv() {
+  const baseUrl = process.env.KOE_LLM_BASE_URL;
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    model: process.env.KOE_LLM_MODEL ?? "qwen3.6-35b-a3b",
+    timeoutMs: Number(process.env.KOE_LLM_TIMEOUT_MS ?? 2500),
+    promptVersion: process.env.KOE_PROMPT_VERSION ?? "v2",
+  };
+}
+
+/**
+ * LLM 出力への「は」読み分けの安全網（旧プロジェクトの二段構えに忠実）。
+ * プロンプト指示が漏れたケースを kuromoji の品詞判定で確定的に直す。
+ * 対象は係助詞「は」と、接続詞・感動詞で「は」で終わる語（では・こんにちは等）
+ * — フォールバック経路の tokenReading と同じ汎用規則。
+ */
+async function applyParticleCorrection(koe) {
+  const tokenizer = await initTokenizer();
+  if (!tokenizer) return koe;
+  return mapNonTagParts(koe, (part) =>
+    tokenizer
+      .tokenize(part)
+      .map((token) => {
+        const surface = token.surface_form;
+        if (surface === "は" && token.pos_detail_1 === "係助詞") return "わ";
+        if ((token.pos === "接続詞" || token.pos === "感動詞") && surface.endsWith("は")) {
+          return surface.replace(/は$/, "わ");
+        }
+        return surface;
+      })
+      .join(""),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // メイン変換関数
 // ---------------------------------------------------------------------------
 
 /**
- * speechText（漢字かな交じり）を AquesTalk10 音声記号列に変換する。
+ * ルールベース変換（kuromoji）。LLM 不達・出力不正時のフォールバック経路。
  *
- * @param {string} text kai の speechText（例: 「Issue #42 の実装を開始します」）
- * @returns {Promise<string>} AquesTalk10 音声記号列（例: 「いっしゅー<NUMK VAL=42>のじっそうをかいしします。」）
- *          変換失敗時は元のテキストをそのまま返す（フォールバック）
+ * @param {string} text kai の speechText
+ * @returns {Promise<string>} AquesTalk10 音声記号列
  */
-export async function toKoe(text) {
+export async function toKoeRuleBased(text) {
   if (!text) return "";
 
   try {
@@ -466,4 +510,48 @@ export async function toKoe(text) {
     logWarn("音声記号列変換失敗。元テキストで試みます", String(err));
     return text; // フォールバック
   }
+}
+
+/**
+ * speechText（漢字かな交じり）を AquesTalk10 音声記号列に変換する。
+ *
+ * 主経路は LLM 変換（KOE_LLM_BASE_URL 設定時）。LLM の不達・タイムアウト・
+ * バリデーション違反時はルールベース経路へフォールバックし、発話は決して
+ * 止めない（設計書 §5.2・§6）。
+ *
+ * @param {string} text kai の speechText（例: 「Issue #42 の実装を開始します」）
+ * @param {{llm?: object|null}} [options] テスト用に LLM 設定を注入可能
+ *        （省略時は環境変数から。null を明示すると LLM を使わない）
+ * @returns {Promise<string>} AquesTalk10 音声記号列
+ */
+export async function toKoe(text, options = {}) {
+  if (!text) return "";
+
+  const llmConfig = "llm" in options ? options.llm : llmConfigFromEnv();
+  if (!llmConfig) return toKoeRuleBased(text);
+
+  // ルールベース変換を先に行う（v2 プロンプトの「参考よみ」とフォールバックを兼ねる。
+  // 漢字の読みは kuromoji のほうが正確 — 実機評価 2026-07-05）
+  const ruleBased = await toKoeRuleBased(text);
+
+  try {
+    const raw = await generateKoeLlm(text, {
+      ...llmConfig,
+      terms: TECHNICAL_TERMS,
+      referenceKana: ruleBased,
+    });
+    const koe = ensureSentenceEnd(await applyParticleCorrection(sanitizeLlmKoe(raw)));
+    const issues = validateKoe(koe);
+    if (koe && issues.length === 0) {
+      return koe;
+    }
+    logWarn("LLM koe がバリデーション違反。ルールベースへフォールバック", {
+      issues,
+      koe,
+    });
+  } catch (err) {
+    logWarn("LLM koe 生成失敗。ルールベースへフォールバック", String(err));
+  }
+
+  return ruleBased;
 }

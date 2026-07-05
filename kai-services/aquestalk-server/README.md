@@ -21,17 +21,31 @@ npm start
 
 ## 環境変数
 
-| 変数名               | 必須 | 説明                                                                    | デフォルト  |
-| -------------------- | ---- | ----------------------------------------------------------------------- | ----------- |
-| `AQUESTALK_CLI_PATH` | ○    | `aquestalk_cli` バイナリのパス                                          | -           |
-| `AQUESTALK_SDK_DIR`  | ○    | `libAquesTalk10.dylib` のあるディレクトリ（`DYLD_LIBRARY_PATH` に設定） | -           |
-| `AQUESTALK_DEV_KEY`  | -    | AquesTalk10 開発者ライセンスキー（subprocess の env にそのまま継承）    | -           |
-| `AQUESTALK_USR_KEY`  | -    | AquesTalk10 ユーザーライセンスキー（同上）                              | -           |
-| `BIND_ADDR`          | -    | HTTP サーバーの bind アドレス                                           | `127.0.0.1` |
-| `PORT`               | -    | HTTP サーバーのポート                                                   | `8890`      |
+| 変数名               | 必須 | 説明                                                                    | デフォルト        |
+| -------------------- | ---- | ----------------------------------------------------------------------- | ----------------- |
+| `AQUESTALK_CLI_PATH` | ○    | `aquestalk_cli` バイナリのパス                                          | -                 |
+| `AQUESTALK_SDK_DIR`  | ○    | `libAquesTalk10.dylib` のあるディレクトリ（`DYLD_LIBRARY_PATH` に設定） | -                 |
+| `AQUESTALK_DEV_KEY`  | -    | AquesTalk10 開発者ライセンスキー（subprocess の env にそのまま継承）    | -                 |
+| `AQUESTALK_USR_KEY`  | -    | AquesTalk10 ユーザーライセンスキー（同上）                              | -                 |
+| `BIND_ADDR`          | -    | HTTP サーバーの bind アドレス                                           | `127.0.0.1`       |
+| `PORT`               | -    | HTTP サーバーのポート                                                   | `8890`            |
+| `KOE_LLM_BASE_URL`   | -    | koe 生成 LLM の OpenAI 互換 API（空ならルールベース変換のみ）           | -                 |
+| `KOE_LLM_MODEL`      | -    | koe 生成モデル名                                                        | `qwen3.6-35b-a3b` |
+| `KOE_LLM_TIMEOUT_MS` | -    | LLM タイムアウト。超過でルールベースへフォールバック                    | `2500`            |
+| `KOE_PROMPT_VERSION` | -    | プロンプト版（`v1`=直接変換 / `v2`=参考よみアンカー方式）               | `v2`              |
 
 `.env` はプロセス起動時に `process.loadEnvFile()`（Node 20.12+ / 21.7+）で読み込まれる。
 `.env` が存在しない場合は無視され、シェルや launchd 等で別途設定済みの環境変数がそのまま使われる。
+
+### koe 生成の LLM 主経路
+
+`KOE_LLM_BASE_URL` を設定すると、テキスト → koe 変換の主経路が LLM になる
+（設計: `docs/kai/design/tts-reading-rules.md` §5.2）。ルールベース変換（kuromoji）の
+出力を「参考よみ」としてプロンプトに渡し、LLM は英単語のひらがな読みと `/` 区切り・
+読点だけを直す（v2 アンカー方式 — 漢字の読みは kuromoji のほうが正確なため）。
+LLM 出力は sanitize → 品詞安全網 → 静的バリデーションを通し、違反・不達時は
+ルールベース出力へフォールバックする（発話は止めない）。
+プロンプトの実機評価は `node src/eval-koe-llm.mjs` で行う。
 
 ## API
 
