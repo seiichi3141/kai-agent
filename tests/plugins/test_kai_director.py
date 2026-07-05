@@ -102,6 +102,59 @@ def test_disabled_by_config(director_mod, monkeypatch):
     assert d._q.empty()
 
 
+# --- コマンドログ（Issue #30）----------------------------------------------------
+
+
+def test_extract_command(director_mod):
+    assert director_mod.extract_command({"command": "git status"}) == "git status"
+    assert director_mod.extract_command('{"command": "ls -la"}') == "ls -la"
+    assert director_mod.extract_command({"path": "a.py"}) == ""
+
+
+def test_log_command_writes_masked_line(director_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(director_mod, "_plugin_cfg",
+                        lambda: {"command_log": str(tmp_path / "cmdlog")})
+    d = director_mod._Director(start_thread=False)
+    d.log_command("gh auth login --with-token ghp_ABCDEFGHIJKLMNOPQRSTUV")
+    content = (tmp_path / "cmdlog").read_text()
+    assert content.startswith("$ gh auth login")
+    assert "ghp_ABCDEFGHIJKLMNOPQRSTUV" not in content  # マスク済み
+    assert "«redacted»" in content
+
+
+def test_log_result_only_on_failure_or_slow(director_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(director_mod, "_plugin_cfg",
+                        lambda: {"command_log": str(tmp_path / "cmdlog")})
+    d = director_mod._Director(start_thread=False)
+    d.log_result(status="ok", duration_ms=100)  # 何も書かない
+    assert not (tmp_path / "cmdlog").exists()
+    d.log_result(status="error")
+    d.log_result(status="ok", duration_ms=5000)
+    lines = (tmp_path / "cmdlog").read_text().splitlines()
+    assert any("✗ error" in ln for ln in lines)
+    assert any("5s" in ln for ln in lines)
+
+
+def test_pre_hook_logs_terminal_command(director_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(director_mod, "_plugin_cfg",
+                        lambda: {"command_log": str(tmp_path / "cmdlog")})
+    d = director_mod._Director(start_thread=False)
+    monkeypatch.setattr(director_mod, "_director", d)
+    director_mod._on_pre_tool_call(tool_name="terminal", args={"command": "npm test"})
+    director_mod._on_pre_tool_call(tool_name="read_file", args={"path": "a.py"})  # 非terminalは無視
+    content = (tmp_path / "cmdlog").read_text()
+    assert "$ npm test" in content
+    assert "a.py" not in content
+
+
+def test_command_log_disabled_by_config(director_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(director_mod, "_plugin_cfg",
+                        lambda: {"enabled": False, "command_log": str(tmp_path / "cmdlog")})
+    d = director_mod._Director(start_thread=False)
+    d.log_command("ls")
+    assert not (tmp_path / "cmdlog").exists()
+
+
 # --- notify（HTTP スタブ）---------------------------------------------------------
 
 
