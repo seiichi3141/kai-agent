@@ -36,15 +36,16 @@ systemd --user サービスとして常駐させる場合は後述の `install.s
 
 ## 環境変数
 
-| 変数            | デフォルト                          | 意味                                                                     |
-| --------------- | ----------------------------------- | ------------------------------------------------------------------------ |
-| `SPEECHD_PORT`  | `8900`                              | HTTP サーバーの listen ポート（`/say` `/events` `/overlay/` 共通）       |
-| `SPEECHD_BIND`  | `127.0.0.1`                         | HTTP サーバーの bind アドレス                                            |
-| `TTS_URL`       | `http://100.106.136.117:8890`       | Mac TTS サーバー（`aquestalk-server`）のベース URL                       |
-| `AUDIO_SINK`    | `kai_speaker`                       | `paplay --device` に渡す PipeWire sink 名                                |
-| `SUBTITLE_FILE` | `$XDG_RUNTIME_DIR/kai-subtitle.txt` | 字幕ファイル（**映像合成の正典**。OBS の text ソースがこれを読んで表示） |
-| `OVERLAY_DIR`   | `../overlay`（リポジトリ内の相対）  | `/overlay/` で配信する Web オーバーレイの実体ディレクトリ                |
-| `HERMES_HOME`   | （未設定なら `~/.hermes`）          | トレース JSONL の出力先ルート（後述）                                    |
+| 変数                      | デフォルト                          | 意味                                                                     |
+| ------------------------- | ----------------------------------- | ------------------------------------------------------------------------ |
+| `SPEECHD_PORT`            | `8900`                              | HTTP サーバーの listen ポート（`/say` `/events` `/overlay/` 共通）       |
+| `SPEECHD_BIND`            | `127.0.0.1`                         | HTTP サーバーの bind アドレス                                            |
+| `TTS_URL`                 | `http://100.106.136.117:8890`       | Mac TTS サーバー（`aquestalk-server`）のベース URL                       |
+| `AUDIO_SINK`              | `kai_speaker`                       | `paplay --device` に渡す PipeWire sink 名                                |
+| `SPEECHD_SENTENCE_GAP_MS` | `300`                               | 文の再生後に挟む無音（ms）。息継ぎ。`0` で無効                           |
+| `SUBTITLE_FILE`           | `$XDG_RUNTIME_DIR/kai-subtitle.txt` | 字幕ファイル（**映像合成の正典**。OBS の text ソースがこれを読んで表示） |
+| `OVERLAY_DIR`             | `../overlay`（リポジトリ内の相対）  | `/overlay/` で配信する Web オーバーレイの実体ディレクトリ                |
+| `HERMES_HOME`             | （未設定なら `~/.hermes`）          | トレース JSONL の出力先ルート（後述）                                    |
 
 **字幕の映像合成（2026-07-05 方式変更）:** 字幕は `SUBTITLE_FILE` への原子的書き込みが正典で、
 OBS 側の text-freetype2 ソース（「ファイルからの読み取り」）が配信映像に合成する。

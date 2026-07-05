@@ -62,6 +62,8 @@ SUBTITLE_FILE = Path(_env("SUBTITLE_FILE", _default_subtitle_file))
 
 CONNECT_TIMEOUT = 3.0
 TOTAL_TIMEOUT = 30.0
+# 文間の無音（ms）。一気読み感を消す「息継ぎ」（docs/kai/design/tts-reading-rules.md §5.3）
+SENTENCE_GAP_MS = float(_env("SPEECHD_SENTENCE_GAP_MS", "300"))
 LOW_PRIORITY_QUEUE_THRESHOLD = 5  # この件数を超えて滞留していたら priority:low を drop
 PLAYBACK_TIMEOUT = 120.0  # paplay の残留防止ウォッチドッグ（設計 §4 の watchdog 相当）
 SSE_KEEPALIVE_INTERVAL = 15.0  # /events 購読者に keep-alive コメントを送る間隔（秒）
@@ -396,6 +398,9 @@ def _process_item(item: dict) -> None:
             wav_b64 = line.get("wav_base64")
             if wav_b64:
                 _play_segment(beat_id, session_id, work_thread_id, seg_text, wav_b64, source=source, emotion=emotion)
+                # 息継ぎ: 文の再生後に短い無音を挟む（次の文・次の発話との間）
+                if SENTENCE_GAP_MS > 0:
+                    time.sleep(SENTENCE_GAP_MS / 1000.0)
             else:
                 err = line.get("error", "synthesis failed")
                 _degrade_segment(beat_id, session_id, work_thread_id, seg_text, err, source=source, emotion=emotion)
