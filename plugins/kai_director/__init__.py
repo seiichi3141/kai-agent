@@ -35,8 +35,8 @@ from typing import Any
 
 _PLUGIN_ID = "kai_director"
 
-# apply_patch 形式（*** Update File: / *** Add File:）から対象パスを抜く
-_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add) File: (.+)$", re.MULTILINE)
+# apply_patch 形式（*** Update File: / *** Add File:）から対象パスと種別を抜く
+_PATCH_EDIT_RE = re.compile(r"^\*\*\* (Update|Add) File: (.+)$", re.MULTILINE)
 
 # --- 秘匿マスク（kai_trace / speechd / narrator と同方針。plugin 単体で完結）----
 
@@ -83,12 +83,16 @@ def _plugin_cfg() -> dict:
         return {}
 
 
-def extract_edited_files(tool_name: str, args: Any) -> list[str]:
-    """編集系ツールの引数から対象ファイルパスを抽出する。
+def extract_edits(tool_name: str, args: Any, new_paths: set[str] | None = None) -> list[dict]:
+    """編集系ツールの引数から [{path, action}] を抽出する（Issue #32）。
 
-    args は dict のことも JSON 文字列のこともある（トレース実測）。
-    抽出できなければ空リスト（通知しないだけで作業に影響なし）。
+    action は "add"（新規作成）か "update"（既存編集）。kai-typewriter は
+    新規作成のとき全文をタイピング再生し、更新のとき差分だけ再生する。
+    - patch: `*** Add File:` → add、`*** Update File:` → update
+    - write_file: new_paths（pre_tool_call で「書き込み前に存在しなかった」と
+      判定したパス集合）に含まれれば add、なければ update
     """
+    new_paths = new_paths or set()
     if isinstance(args, str):
         try:
             args = json.loads(args)
@@ -99,15 +103,33 @@ def extract_edited_files(tool_name: str, args: Any) -> list[str]:
 
     if tool_name == "write_file":
         path = args.get("path") or args.get("file_path")
-        return [str(path)] if path else []
+        if not path:
+            return []
+        path = str(path)
+        return [{"path": path, "action": "add" if path in new_paths else "update"}]
 
     if tool_name == "patch":
         patch_text = args.get("patch") or ""
         if not isinstance(patch_text, str):
             return []
-        return [m.strip() for m in _PATCH_FILE_RE.findall(patch_text)]
+        return [
+            {"path": m.group(2).strip(), "action": "add" if m.group(1) == "Add" else "update"}
+            for m in _PATCH_EDIT_RE.finditer(patch_text)
+        ]
 
     return []
+
+
+def write_target_path(args: Any) -> str:
+    """write_file の対象パス（pre_tool_call で存在判定するため）。無ければ空。"""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return ""
+    if isinstance(args, dict):
+        return str(args.get("path") or args.get("file_path") or "")
+    return ""
 
 
 def extract_command(args: Any) -> str:
@@ -133,16 +155,27 @@ class _Director:
         default_log = str(Path(os.path.expanduser("~/.config/kai/command-log")))
         self.command_log: Path = Path(str(cfg.get("command_log") or default_log))
         self._log_lock = threading.Lock()
+        # write_file の pre_tool_call で「書き込み前に存在しなかった」パスを覚える
+        # （post_tool_call では既にファイルが存在するので pre で判定する）
+        self._new_paths: set[str] = set()
         self._q: "queue.Queue[dict]" = queue.Queue(maxsize=200)
         if start_thread:  # テストでは False にして _notify を直接呼ぶ
             thread = threading.Thread(target=self._run, name="kai-director", daemon=True)
             thread.start()
 
-    def push_edit(self, files: list[str], tool: str) -> None:
-        if not (self.enabled and files):
+    def mark_write_target(self, path: str) -> None:
+        """write_file 実行前に、対象がまだ無ければ「新規」として覚える（Issue #32）。"""
+        if path and not os.path.exists(path):
+            self._new_paths.add(path)
+
+    def push_edits(self, edits: list[dict], tool: str) -> None:
+        if not (self.enabled and edits):
             return
+        # 消費したら new_paths から外す（次回の同名編集は update になる）
+        for e in edits:
+            self._new_paths.discard(e.get("path"))
         try:
-            self._q.put_nowait({"files": files, "tool": tool})
+            self._q.put_nowait({"edits": edits, "tool": tool})
         except queue.Full:
             pass  # 溢れたら捨てる（演出は best-effort）
 
@@ -201,9 +234,13 @@ _director: _Director | None = None
 
 
 def _on_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> None:
-    # 観測のみ（block ディレクティブは返さない）。terminal コマンドをログに映す
-    if _director is not None and tool_name == "terminal":
-        _director.log_command(extract_command(args))
+    # 観測のみ（block ディレクティブは返さない）
+    if _director is None:
+        return
+    if tool_name == "terminal":
+        _director.log_command(extract_command(args))  # コマンドをログに映す（#30）
+    elif tool_name == "write_file":
+        _director.mark_write_target(write_target_path(args))  # 新規判定（#32）
 
 
 def _on_post_tool_call(tool_name: str = "", args: Any = None, status: str = "",
@@ -217,9 +254,9 @@ def _on_post_tool_call(tool_name: str = "", args: Any = None, status: str = "",
         return
     if status and status not in ("ok", "success"):
         return  # 失敗した編集は再生しない
-    files = extract_edited_files(tool_name, args)
-    if files:
-        _director.push_edit(files, tool_name)
+    edits = extract_edits(tool_name, args, _director._new_paths)
+    if edits:
+        _director.push_edits(edits, tool_name)
 
 
 def register(ctx) -> None:

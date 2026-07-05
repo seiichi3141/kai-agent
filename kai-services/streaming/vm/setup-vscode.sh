@@ -36,7 +36,13 @@ cat > "$HOME/.config/Code/User/settings.json" <<'EOF'
   "workbench.startupEditor": "none",
   "explorer.autoReveal": true,
   "extensions.ignoreRecommendations": true,
-  "chat.commandCenter.enabled": false
+  "extensions.autoCheckUpdates": false,
+  "workbench.tips.enabled": false,
+  "files.hotExit": "off",
+  "window.restoreWindows": "none",
+  "chat.commandCenter.enabled": false,
+  "chat.experimental.offerSetup": false,
+  "workbench.secondarySideBar.showLabels": false
 }
 EOF
 cat > "$HOME/.vscode/argv.json" <<'EOF'

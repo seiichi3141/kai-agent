@@ -41,15 +41,22 @@ def director_mod(monkeypatch):
 # --- extract_edited_files --------------------------------------------------------
 
 
-def test_extract_write_file_dict(director_mod):
-    files = director_mod.extract_edited_files("write_file", {"path": "/tmp/a.py", "content": "x"})
-    assert files == ["/tmp/a.py"]
+def test_extract_write_file_update(director_mod):
+    # 既存ファイル（new_paths に無い）→ update
+    edits = director_mod.extract_edits("write_file", {"path": "/tmp/a.py", "content": "x"})
+    assert edits == [{"path": "/tmp/a.py", "action": "update"}]
+
+
+def test_extract_write_file_add(director_mod):
+    # 新規ファイル（new_paths に含む）→ add
+    edits = director_mod.extract_edits("write_file", {"path": "/tmp/new.py"}, {"/tmp/new.py"})
+    assert edits == [{"path": "/tmp/new.py", "action": "add"}]
 
 
 def test_extract_write_file_json_string(director_mod):
     # トレース実測: args は JSON 文字列で渡ってくることがある
-    files = director_mod.extract_edited_files("write_file", '{"path": "/tmp/b.sh"}')
-    assert files == ["/tmp/b.sh"]
+    edits = director_mod.extract_edits("write_file", '{"path": "/tmp/b.sh"}')
+    assert edits == [{"path": "/tmp/b.sh", "action": "update"}]
 
 
 def test_extract_patch_update_and_add(director_mod):
@@ -61,17 +68,17 @@ def test_extract_patch_update_and_add(director_mod):
         "+content\n"
         "*** End Patch"
     )
-    files = director_mod.extract_edited_files("patch", {"mode": "patch", "patch": patch})
-    assert files == [
-        "/home/kai/kai-agent/kai-services/streaming/vm/broadcast.sh",
-        "/home/kai/kai-agent/docs/kai/new.md",
+    edits = director_mod.extract_edits("patch", {"mode": "patch", "patch": patch})
+    assert edits == [
+        {"path": "/home/kai/kai-agent/kai-services/streaming/vm/broadcast.sh", "action": "update"},
+        {"path": "/home/kai/kai-agent/docs/kai/new.md", "action": "add"},
     ]
 
 
 def test_extract_ignores_other_tools_and_garbage(director_mod):
-    assert director_mod.extract_edited_files("terminal", {"command": "ls"}) == []
-    assert director_mod.extract_edited_files("write_file", "not json") == []
-    assert director_mod.extract_edited_files("patch", {"patch": 123}) == []
+    assert director_mod.extract_edits("terminal", {"command": "ls"}) == []
+    assert director_mod.extract_edits("write_file", "not json") == []
+    assert director_mod.extract_edits("patch", {"patch": 123}) == []
 
 
 # --- hook → queue ----------------------------------------------------------------
@@ -83,7 +90,20 @@ def test_hook_pushes_edit(director_mod, monkeypatch):
     director_mod._on_post_tool_call(
         tool_name="write_file", args={"path": "/tmp/a.py"}, status="ok")
     item = d._q.get_nowait()
-    assert item == {"files": ["/tmp/a.py"], "tool": "write_file"}
+    assert item == {"edits": [{"path": "/tmp/a.py", "action": "update"}], "tool": "write_file"}
+
+
+def test_pre_hook_marks_new_write_target(director_mod, monkeypatch, tmp_path):
+    d = director_mod._Director(start_thread=False)
+    monkeypatch.setattr(director_mod, "_director", d)
+    newp = str(tmp_path / "brand-new.py")
+    director_mod._on_pre_tool_call(tool_name="write_file", args={"path": newp})
+    assert newp in d._new_paths
+    # post_tool_call でその新規パスは action=add で通知される
+    director_mod._on_post_tool_call(tool_name="write_file", args={"path": newp}, status="ok")
+    item = d._q.get_nowait()
+    assert item == {"edits": [{"path": newp, "action": "add"}], "tool": "write_file"}
+    assert newp not in d._new_paths  # 消費で外れる
 
 
 def test_hook_skips_failed_edit_and_other_tools(director_mod, monkeypatch):
@@ -91,14 +111,14 @@ def test_hook_skips_failed_edit_and_other_tools(director_mod, monkeypatch):
     monkeypatch.setattr(director_mod, "_director", d)
     director_mod._on_post_tool_call(
         tool_name="write_file", args={"path": "/tmp/a.py"}, status="error")
-    director_mod._on_post_tool_call(tool_name="terminal", args={"command": "ls"}, status="ok")
+    director_mod._on_post_tool_call(tool_name="read_file", args={"path": "a.py"}, status="ok")
     assert d._q.empty()
 
 
 def test_disabled_by_config(director_mod, monkeypatch):
     monkeypatch.setattr(director_mod, "_plugin_cfg", lambda: {"enabled": False})
     d = director_mod._Director(start_thread=False)
-    d.push_edit(["/tmp/a.py"], "write_file")
+    d.push_edits([{"path": "/tmp/a.py", "action": "update"}], "write_file")
     assert d._q.empty()
 
 
