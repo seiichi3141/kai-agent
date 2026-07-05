@@ -1,0 +1,22 @@
+# kai trace viewer（セッションログの Web ビューア）。systemd --user テンプレート。
+# install.sh が @REPO_DIR@ を実パスに置換して ~/.config/systemd/user/ に配置する。
+[Unit]
+Description=kai trace viewer (web timeline of speech/subtitle/tool events)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=@REPO_DIR@/kai-services/trace-viewer
+Environment=TRACE_VIEWER_PORT=8910
+# Tailscale / UTM NAT 内からの閲覧のため全インターフェースに bind する
+# （VM に公開ポートはない。README「セキュリティ」参照）
+Environment=TRACE_VIEWER_BIND=0.0.0.0
+# hermes gateway が非デフォルトプロファイル（HERMES_HOME）で動く場合は同じ値を
+# ここにも明示すること。未設定なら ~/.hermes/kai_trace を読む。
+# Environment=HERMES_HOME=%h/.hermes
+ExecStart=/usr/bin/python3 @REPO_DIR@/kai-services/trace-viewer/trace_viewer.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
