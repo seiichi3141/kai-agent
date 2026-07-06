@@ -1,0 +1,8 @@
+name: kai_ide
+version: 0.1.0
+description: "kai が配信画面の VSCode を高速操作するツール群（Issue #49）。PR-1: 状態取得・ファイル開閉。"
+author: kai
+tools:
+  - vscode_state
+  - vscode_open
+  - vscode_close_tab

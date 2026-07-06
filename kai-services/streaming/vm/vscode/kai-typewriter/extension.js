@@ -150,43 +150,146 @@ async function drainQueue() {
   }
 }
 
+// --- VSCode ブリッジ（Issue #49）: 状態取得・ファイル操作 ------------------------
+
+/** タブの入力からファイルパスを取り出す（TabInputText 等）。無ければ null。 */
+function tabPath(tab) {
+  const input = tab && tab.input;
+  if (input && input.uri && input.uri.scheme === "file") return input.uri.fsPath;
+  return null;
+}
+
+/** GET /state: 開いているタブ・アクティブファイル+行・dirty を返す。 */
+function getState() {
+  const tabs = [];
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      const path = tabPath(tab);
+      if (path) {
+        tabs.push({ path, active: !!tab.isActive, dirty: !!tab.isDirty, group: group.viewColumn });
+      }
+    }
+  }
+  const ed = vscode.window.activeTextEditor;
+  const active = ed
+    ? {
+        path: ed.document.uri.fsPath,
+        line: ed.selection.active.line + 1, // 1-indexed（人間表示に合わせる）
+        column: ed.selection.active.character,
+        dirty: ed.document.isDirty,
+      }
+    : null;
+  const visibleEditors = vscode.window.visibleTextEditors.map((e) => e.document.uri.fsPath);
+  return { active, tabs, visibleEditors };
+}
+
+/** 相対パスはワークスペースルート基準で絶対化する（kai は相対で渡すことがある）。 */
+function resolvePath(p) {
+  if (typeof p !== "string" || p.startsWith("/")) return p;
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders && folders.length) {
+    const path = require("path");
+    return path.join(folders[0].uri.fsPath, p);
+  }
+  return p;
+}
+
+/** POST /open {path, line?}: ファイルを開き該当行へスクロール。 */
+async function openFile(path, line) {
+  const doc = await vscode.workspace.openTextDocument(resolvePath(path));
+  const editor = await vscode.window.showTextDocument(doc, { preview: false });
+  if (typeof line === "number" && line > 0) {
+    const pos = new vscode.Position(Math.max(0, line - 1), 0);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+  }
+  return { opened: path };
+}
+
+/** POST /close {path} | {all:true}: タブを閉じる。 */
+async function closeTab(data) {
+  if (data.all) {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    return { closed: "all" };
+  }
+  const target = resolvePath(data.path);
+  const toClose = [];
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (tabPath(tab) === target) toClose.push(tab);
+    }
+  }
+  if (toClose.length) await vscode.window.tabGroups.close(toClose);
+  return { closed: target, count: toClose.length };
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(body || "{}"));
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
+function sendJson(res, code, obj) {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(obj));
+}
+
+function handleEdit(data) {
+  // 新形式: edits=[{path, action}]。旧形式 files=[path] は update 扱い
+  const edits = Array.isArray(data.edits)
+    ? data.edits
+    : (Array.isArray(data.files) ? data.files.map((p) => ({ path: p, action: "update" })) : []);
+  for (const e of edits) {
+    const path = e && e.path;
+    if (typeof path === "string" && path.startsWith("/") && !pending.some((q) => q.path === path)) {
+      pending.push({ path, action: e.action === "add" ? "add" : "update" });
+    }
+  }
+  void drainQueue();
+  return { queued: pending.length };
+}
+
 function activate(context) {
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
   statusBar.text = "$(check) kai typewriter";
   statusBar.show();
   context.subscriptions.push(statusBar);
 
-  const server = http.createServer((req, res) => {
-    if (req.method !== "POST" || req.url !== "/edit") {
-      res.writeHead(404).end();
-      return;
-    }
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      try {
-        const data = JSON.parse(body || "{}");
-        // 新形式: edits=[{path, action}]。旧形式 files=[path] は update 扱い
-        const edits = Array.isArray(data.edits)
-          ? data.edits
-          : (Array.isArray(data.files) ? data.files.map((p) => ({ path: p, action: "update" })) : []);
-        for (const e of edits) {
-          const path = e && e.path;
-          if (typeof path === "string" && path.startsWith("/") && !pending.some((q) => q.path === path)) {
-            pending.push({ path, action: e.action === "add" ? "add" : "update" });
-          }
-        }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ queued: pending.length }));
-        void drainQueue();
-      } catch (e) {
-        res.writeHead(400).end(JSON.stringify({ error: String(e) }));
+  const server = http.createServer(async (req, res) => {
+    try {
+      if (req.method === "GET" && req.url === "/state") {
+        sendJson(res, 200, getState());
+        return;
       }
-    });
+      if (req.method === "POST" && req.url === "/edit") {
+        sendJson(res, 200, handleEdit(await readBody(req)));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/open") {
+        const d = await readBody(req);
+        sendJson(res, 200, await openFile(d.path, d.line));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/close") {
+        sendJson(res, 200, await closeTab(await readBody(req)));
+        return;
+      }
+      sendJson(res, 404, { error: "not found" });
+    } catch (e) {
+      sendJson(res, 400, { error: String(e) });
+    }
   });
   server.listen(cfg().port, "127.0.0.1");
   context.subscriptions.push({ dispose: () => server.close() });
-  console.log(`[kai-typewriter] listening on 127.0.0.1:${cfg().port}`);
+  console.log(`[kai-typewriter] bridge listening on 127.0.0.1:${cfg().port}`);
 }
 
 function deactivate() {}

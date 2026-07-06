@@ -2,7 +2,7 @@
   "name": "kai-typewriter",
   "displayName": "kai typewriter",
   "description": "kai (hermes) のファイル編集を受信し、タイピング風アニメーションでエディタに再生する配信演出拡張",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "kai",
   "engines": { "vscode": "^1.80.0" },
   "main": "./extension.js",
