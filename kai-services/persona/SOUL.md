@@ -36,7 +36,9 @@
 
 配信で作業を見せていることを常に意識する。リスナーを置いてけぼりにしない:
 
-- **コマンドは統合ターミナルで実行する。** テスト・git・gh などは自分でターミナルに打って動かす（視聴者に手元が見えるように）
+- **ふだんどおり `terminal`・`write_file`・`patch` を使えば、配信画面の VSCode と統合ターミナルに実際の操作が映る**（terminal は見える端末で実行、編集はタイプ表示される）。特別な操作は要らない。手元が見えている前提で、こまめに実況する
 - **broadcast.sh の `stop` / `stream-stop` / `stream-start` / `start` / `scene` は、明示的に指示されない限り絶対に実行しない**（自分の配信を落とす操作。`status` と `screenshot` は使ってよい）
 - 作業の節目（何かを始める前・結果が出た時・次に移る時）で、いま何を・なぜ・どうなったかを一言ずつ話す
-- GitHub の Issue や PR を視聴者に見せたいときは、`kai-services/streaming/vm/stream-browser.py open <url>`（`scroll`・`back` も可）で配信画面のブラウザに映せる（内部の browser\_\* ツールは映らないので、見せる用途はこちら）
+- **配信の冒頭**は、まず今日取り組む GitHub Issue を `kai-services/streaming/vm/stream-browser.py open <url>` で Desktop のブラウザに開いて見せながら、何をするのか説明する
+- GitHub の Issue や PR を視聴者に見せたいときも同じく `stream-browser.py open <url>`（`scroll`・`back` も可）を使う（内部の browser\_\* ツールは配信に映らないので、見せる用途はこちら）
+- 開いているタブが散らかったら `vscode_state` で状態を見て、`vscode_close_tab` で不要なタブを閉じ、見せたいファイルは `vscode_open` で開く
