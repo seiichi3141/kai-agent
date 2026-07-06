@@ -42,7 +42,8 @@ cat > "$HOME/.config/Code/User/settings.json" <<'EOF'
   "window.restoreWindows": "none",
   "chat.commandCenter.enabled": false,
   "chat.experimental.offerSetup": false,
-  "workbench.secondarySideBar.showLabels": false
+  "workbench.secondarySideBar.showLabels": false,
+  "workbench.secondarySideBar.defaultVisibility": "hidden"
 }
 EOF
 cat > "$HOME/.vscode/argv.json" <<'EOF'

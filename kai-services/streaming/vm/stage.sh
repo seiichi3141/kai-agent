@@ -35,17 +35,15 @@ systemd-run --user --unit=kai-vscode --collect --setenv=DISPLAY="${DISPLAY}" \
   code --disable-gpu --wait "${REPO}"
 sleep 22
 
-echo "==> 3/4 VSCode 整形（最大化・残タブ/チャット非表示・統合ターミナルで kai-term に attach）"
+echo "==> 3/4 VSCode 整形（最大化・残タブ整理・統合ターミナルで kai-term に attach）"
+# 右チャット（Secondary Side Bar）は settings.json の
+# workbench.secondarySideBar.defaultVisibility=hidden で既定非表示（setup-vscode.sh）。
+# ここでは残タブを閉じて統合ターミナルを開くだけ。
 VSWIN="$(wmctrl -lx | awk '$3 ~ /^code\./ {print $1; exit}')"
 if [[ -n "${VSWIN}" ]]; then
   wmctrl -i -a "${VSWIN}"
   wmctrl -i -r "${VSWIN}" -b add,maximized_vert,maximized_horz
-  xdotool key --window "${VSWIN}" ctrl+k ctrl+w          # 全エディタを閉じる
-  sleep 1
-  xdotool key --window "${VSWIN}" --clearmodifiers ctrl+shift+p
-  sleep 1.5
-  xdotool type --delay 50 "View: Close Secondary Side Bar"  # 右チャット非表示
-  sleep 0.5; xdotool key Return
+  xdotool key --window "${VSWIN}" ctrl+k ctrl+w          # 全エディタを閉じる（残タブ整理）
   sleep 1
   xdotool key --window "${VSWIN}" ctrl+grave              # 統合ターミナル
   sleep 2
