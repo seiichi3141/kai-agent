@@ -9,6 +9,7 @@
 #   broadcast.sh stop          # 配信停止（必要なら）→ OBS をクリーン終了
 #   broadcast.sh status        # OBS プロセス・配信・録画の状態（人間可読サマリ）
 #   broadcast.sh status --json # obs-websocket の生 JSON（調査用）
+#   broadcast.sh current-scene # 現在の OBS シーン名だけを 1 行で出力
 #   broadcast.sh screenshot [出力パス] # 画面の PNG スクリーンショットを保存
 #   broadcast.sh record-start | record-stop   # 録画（配信に出さない検証用）
 #   broadcast.sh scene <シーン名>      # OBS のシーン切替（kai-slide / シーン 等）
@@ -235,6 +236,40 @@ cmd_status_json() {
   fi
 }
 
+cmd_current_scene() {
+  if ! obs_running; then
+    echo "OBS: 停止" >&2
+    return 1
+  fi
+
+  local scene_json
+  if ! scene_json="$("${OBSWS_PYTHON}" "${OBSWS}" GetCurrentProgramScene 2>&1)"; then
+    printf '%s\n' "${scene_json}" >&2
+    return 1
+  fi
+
+  python3 - "${scene_json}" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+for line in raw.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    data = json.loads(line).get("responseData") or {}
+    scene_name = str(data.get("currentProgramSceneName") or "").strip()
+    if not scene_name:
+        print("シーン名が空です", file=sys.stderr)
+        sys.exit(1)
+    print(scene_name)
+    sys.exit(0)
+
+print("シーン状態を取得できません", file=sys.stderr)
+sys.exit(1)
+PY
+}
+
 cmd_screenshot() {
   local output_path output_dir
   output_path="${1:-${HOME}/kai-screenshots/$(date +%Y%m%d-%H%M%S).png}"
@@ -291,6 +326,7 @@ case "${1:-}" in
     esac
     ;;
   screenshot)    cmd_screenshot "${2:-}" ;;
+  current-scene) cmd_current_scene ;;
   record-start) "${OBSWS_PYTHON}" "${OBSWS}" StartRecord ;;
   record-stop)  "${OBSWS_PYTHON}" "${OBSWS}" StopRecord ;;
   scene)        cmd_scene "${2:-}" ;;
