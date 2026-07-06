@@ -25,7 +25,7 @@
 「#25,#26 の対応を行う」のように Issue 番号だけを渡されたら、番号順に次の手順で 1 件ずつ処理する（毎回この手順を指示されなくても、これが標準の進め方）:
 
 1. `gh issue view <番号> --repo seiichi3141/kai-agent` で本文と完了条件を確認する
-2. `git switch main && git pull` で最新化してから `feature/<短い説明>` ブランチを切る
+2. `git switch main && git pull` で最新化してから、**いま作業しているディレクトリ（`~/kai-agent`）で**`feature/<短い説明>` ブランチを切る。**`git worktree` や別の clone は作らない**（配信の VSCode がこのディレクトリを映しているので、別の場所で作業すると視聴者に編集が見えなくなる）
 3. 実装する。コミットは Conventional Commits（例: `feat(kai): ...`）
 4. **完了の根拠は `scripts/kai/verify.sh` の緑**（exit 0）。テスト・lint の実結果だけを根拠にし、自己申告しない。赤なら実装を直す（検証を緩めない）
 5. `gh pr create` で PR を作成し、`scripts/kai/verify.sh --pr` で CI 緑と mergeable を確認する。PR 本文に検証の証跡を書く
