@@ -247,8 +247,28 @@ def test_patch_applies_and_notifies(ide, monkeypatch):
                         lambda name: lambda args, **kw: '{"success": true}')
     notified = {}
     monkeypatch.setattr(ide, "_notify_edit", lambda edits: notified.setdefault("e", edits))
-    ide.handle_patch({"patch": patch})
+    ide.handle_patch({"mode": "patch", "patch": patch})
     assert notified["e"] == [{"path": "/a/x.py", "action": "update"}]
+
+
+def test_patch_replace_mode_notifies_path(ide, monkeypatch):
+    # 既定の replace モード（path + old/new）でも /edit 通知が飛ぶ（#62 タイプライター）
+    monkeypatch.setattr(ide, "_builtin_file_handler",
+                        lambda name: lambda args, **kw: '{"success": true}')
+    notified = {}
+    monkeypatch.setattr(ide, "_notify_edit", lambda edits: notified.setdefault("e", edits))
+    ide.handle_patch({"path": "/a/doc.md", "old_string": "x", "new_string": "y"})
+    assert notified["e"] == [{"path": "/a/doc.md", "action": "update"}]
+
+
+def test_patch_replace_default_mode_notifies(ide, monkeypatch):
+    # mode 省略時は replace 扱い
+    monkeypatch.setattr(ide, "_builtin_file_handler",
+                        lambda name: lambda args, **kw: '{"ok": true}')
+    notified = {}
+    monkeypatch.setattr(ide, "_notify_edit", lambda edits: notified.setdefault("e", edits))
+    ide.handle_patch({"path": "/a/z.py", "old_string": "a", "new_string": "b"})
+    assert notified.get("e") == [{"path": "/a/z.py", "action": "update"}]
 
 
 def test_notify_edit_swallows_bridge_failure(ide, monkeypatch):
@@ -256,6 +276,24 @@ def test_notify_edit_swallows_bridge_failure(ide, monkeypatch):
         raise RuntimeError("bridge down")
     monkeypatch.setattr(ide, "_bridge_request", _boom)
     ide._notify_edit([{"path": "/a.py", "action": "update"}])  # raise しないこと
+
+
+def test_notify_edit_absolutizes_relative_path(ide, monkeypatch):
+    # 拡張の /edit は絶対パスしか受けない → 相対パスは絶対化して送る（#62）
+    sent = {}
+    monkeypatch.setattr(ide, "_bridge_request",
+                        lambda m, p, body=None, timeout=3.0: sent.update(body or {}))
+    ide._notify_edit([{"path": "README.md", "action": "update"}])
+    assert sent["edits"][0]["path"].startswith("/")
+    assert sent["edits"][0]["path"].endswith("/README.md")
+
+
+def test_notify_edit_keeps_absolute_path(ide, monkeypatch):
+    sent = {}
+    monkeypatch.setattr(ide, "_bridge_request",
+                        lambda m, p, body=None, timeout=3.0: sent.update(body or {}))
+    ide._notify_edit([{"path": "/home/kai/x.py", "action": "add"}])
+    assert sent["edits"] == [{"path": "/home/kai/x.py", "action": "add"}]
 
 
 # --- register -------------------------------------------------------------------

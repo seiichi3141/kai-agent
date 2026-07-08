@@ -356,6 +356,9 @@ class _Narrator:
         self._running_tool: dict | None = None
         self._thinking: bool = False
         self._heartbeat_idx: int = 0
+        # まだ実作業（ツール実行）を1つもしていない冒頭では「考え中」フィラーを
+        # 喋らない。毎回冒頭が定型フィラーになるのを防ぐ（最初の発話を実作業由来に）。
+        self._had_tool_activity: bool = False
         if start_thread:  # テストでは False にして各メソッドを直接呼ぶ
             self._thread = threading.Thread(target=self._run, name="kai-narrator", daemon=True)
             self._thread.start()
@@ -375,6 +378,8 @@ class _Narrator:
             self._events.append(ev)
             if _is_flagship(ev):
                 self._flagship_pending = True
+        with self._state_lock:
+            self._had_tool_activity = True
 
     def set_tool_running(self, tool: str, args: Any, session_id: str = "") -> None:
         with self._state_lock:
@@ -501,6 +506,7 @@ class _Narrator:
         with self._state_lock:
             running = dict(self._running_tool) if self._running_tool else None
             thinking = self._thinking
+            had_activity = self._had_tool_activity
 
         if running is not None:
             elapsed_s = int(time.monotonic() - float(running.get("started_at") or 0))
@@ -524,7 +530,9 @@ class _Narrator:
                 self._recent_narrations.append(text)
             return
 
-        if thinking:
+        if thinking and had_activity:
+            # 冒頭（まだツール未実行）ではフィラーを出さない。最初の発話は実作業
+            # 由来の実況にする（毎回冒頭が定型フィラーになるのを防ぐ）。
             text = _HEARTBEAT_IDLE_LINES[self._heartbeat_idx % len(_HEARTBEAT_IDLE_LINES)]
             self._heartbeat_idx += 1
             self._say(text, source="narrator", priority="low")

@@ -269,11 +269,25 @@ _PATCH_EDIT_RE = re.compile(r"^\*\*\* (Update|Add) File: (.+)$", re.MULTILINE)
 
 
 def _notify_edit(edits: list[dict]) -> None:
-    """ブリッジ /edit へ編集通知（タイプ再生）。best-effort、失敗は握りつぶす。"""
+    """ブリッジ /edit へ編集通知（タイプ再生）。best-effort、失敗は握りつぶす。
+
+    拡張の /edit は絶対パス（`/` 始まり）しか受け付けないため、相対パスを
+    プロセス cwd 基準で絶対化してから渡す（#62: 相対パスだと通知が捨てられ、
+    タイプライターが出なかった）。
+    """
     if not edits:
         return
+    abs_edits = []
+    for e in edits:
+        p = str(e.get("path") or "")
+        if p and not p.startswith("/"):
+            p = os.path.abspath(p)
+        if p:
+            abs_edits.append({"path": p, "action": e.get("action", "update")})
+    if not abs_edits:
+        return
     try:
-        _bridge_request("POST", "/edit", {"edits": edits}, timeout=2.0)
+        _bridge_request("POST", "/edit", {"edits": abs_edits}, timeout=2.0)
     except RuntimeError:
         pass  # 拡張不在（配信外）は演出をスキップ
 
@@ -307,11 +321,24 @@ def handle_write_file(args: dict | None = None, **kw: Any) -> str:
 
 
 def handle_patch(args: dict | None = None, **kw: Any) -> str:
-    """patch の override: ディスクへ実書込 + VSCode に差分をタイプ表示。"""
+    """patch の override: ディスクへ実書込 + VSCode に差分をタイプ表示。
+
+    built-in patch は 2 モード:
+    - mode='replace'（既定）: path + old_string + new_string で 1 ファイルを編集
+    - mode='patch': V4A の patch テキスト（*** Update File: ...）で複数ファイル
+    replace モードでは patch テキストが無いので path から編集対象を取る
+    （ここを取りこぼすとタイプライターが出ない。#62）。
+    """
     args = args or {}
     result = _builtin_file_handler("patch")(args, **kw)
     if "error" not in str(result).lower()[:200]:
-        _notify_edit(_extract_patch_edits(args.get("patch")))
+        mode = str(args.get("mode") or "replace")
+        if mode == "patch":
+            edits = _extract_patch_edits(args.get("patch"))
+        else:  # replace（既定）
+            path = str(args.get("path") or args.get("file_path") or "")
+            edits = [{"path": path, "action": "update"}] if path else []
+        _notify_edit(edits)
     return result
 
 

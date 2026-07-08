@@ -185,6 +185,21 @@ def test_maybe_narrate_respects_min_interval(narrator_mod, narrator, monkeypatch
     assert len(narrator._events) == 1
 
 
+def test_heartbeat_no_filler_before_first_tool(narrator_mod, narrator, monkeypatch):
+    # 冒頭（ツール未実行）では「考え中」フィラーを喋らない。最初の発話を実作業由来に
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    narrator.heartbeat_enabled = True
+    narrator._last_say_ts = 0.0  # 間隔は経過扱い
+    narrator.set_thinking(True)  # 思考中
+    narrator._maybe_heartbeat()
+    assert sent == []  # まだツール未実行 → フィラー出さない
+    # ツールを1回実行したあとの思考中はフィラーを出す（作業中の間つなぎは許容）
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    narrator._maybe_heartbeat()
+    assert len(sent) == 1 and sent[0]["source"] == "narrator"
+
+
 def test_maybe_narrate_flagship_bypasses_interval(narrator_mod, narrator, monkeypatch):
     import time as _time
     sent = []
@@ -366,6 +381,9 @@ def test_heartbeat_falls_back_to_template_on_llm_failure(narrator_mod, narrator,
 def test_heartbeat_idle_lines_rotate_while_thinking(narrator_mod, narrator, monkeypatch):
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    # 冒頭フィラー抑制のため、まず1回ツールを実行した状態にする（作業中の思考中）
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    narrator._events.clear()  # イベントは消費済み扱い（heartbeat の思考分岐に入れる）
     narrator.set_thinking(True)
     narrator._maybe_heartbeat()
     narrator._last_say_ts = 0.0  # 次のインターバル経過を装う
