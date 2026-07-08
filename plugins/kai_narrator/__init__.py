@@ -169,13 +169,57 @@ def _speechify_response(text: str, max_chars: int) -> str:
     return clipped[:max_chars] if clipped else s[:max_chars]
 
 
-# --- ツールイベント → 実況用ダイジェスト ---------------------------------------
+# --- 内部ID・生データの発話混入を防ぐ（FR5。発話直前に適用）--------------------
+
+# コミットハッシュ・ブランチ slug・生 JSON など、読み上げ・字幕に耐えない内部識別子。
+_HASH_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
+_BRANCH_SLUG_RE = re.compile(r"\b(?:feature|fix|chore|docs|refactor|test|hotfix|release)/[\w./\-]+")
+_RAW_JSON_RE = re.compile(r"\{[^{}]{0,400}\}")
+
+
+def _strip_internal(text: str) -> str:
+    """内部 ID・生データ（ブランチ slug・ハッシュ・生 JSON）を人間語化 or 除去する。"""
+    if not text:
+        return text
+    text = _BRANCH_SLUG_RE.sub("作業ブランチ", text)
+    text = _RAW_JSON_RE.sub("", text)
+    text = _HASH_RE.sub("", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
+def _sanitize_speech(text: str, limit: int = 120) -> str:
+    """発話・字幕に出す直前の最終サニタイズ（秘密マスク→内部ID除去→パス短縮）。"""
+    return _shorten_paths(_strip_internal(_mask(text or "")))[:limit]
+
+
+# --- ツールイベント → 実況用ダイジェスト（接地: 意図＋操作＋結果）----------------
 
 _ARG_KEYS = ("command", "cmd", "path", "file_path", "filename", "pattern", "query", "url", "prompt")
 
+# 機微ファイル/コマンド（結果本文を実況材料にしない。秘密漏洩対策 §FR5）。
+_SENSITIVE_RE = re.compile(
+    r"\.env\b|\.pem\b|\.key\b|id_rsa|id_ed25519|\.netrc|credential|secret|password|token|\.ssh/",
+    re.IGNORECASE,
+)
+
+
+def _basename_of(path: Any) -> str:
+    s = str(path or "").strip().rstrip("/")
+    return s.rsplit("/", 1)[-1] if s else ""
+
+
+def _first_meaningful(text: Any, limit: int = 60) -> str:
+    """content / new_string の先頭の意味のある1行を短く抜く（何を書いたか）。"""
+    s = str(text or "")
+    for line in s.splitlines():
+        line = line.strip().lstrip("#>-*+ \t").strip()
+        if line:
+            return _mask(line)[:limit]
+    return _mask(s.strip())[:limit]
+
 
 def _digest_args(args: Any) -> str:
-    """ツール引数から実況の手がかりになる1要素を短く抜き出す。"""
+    """ツール引数から実況の手がかりになる1要素を短く抜き出す（旗艦判定にも使う）。"""
     if isinstance(args, str):
         s = args
     elif isinstance(args, dict):
@@ -185,30 +229,79 @@ def _digest_args(args: Any) -> str:
             if isinstance(v, str) and v.strip():
                 s = v
                 break
-        if not s:
-            try:
-                s = json.dumps(args, ensure_ascii=False, default=str)
-            except Exception:
-                s = str(args)
     elif args is None:
         s = ""
     else:
         s = str(args)
-    # LLM に渡す段階でパスを basename 化しておく（出力に混入する誘因を断つ）
     s = _shorten_paths(_mask(s.strip()))
     return s[:80] + ("…" if len(s) > 80 else "")
 
 
+def _digest_tool_material(tool: Any, args: Any) -> str:
+    """tool 別に「何をしているか」の具体を抜く（content/new_string/todos を活かす）。
+
+    従来の「1 フィールド抽出」では write_file/patch/todo の中身が消え、実況が
+    「〜を編集」止まりになっていた。tool ごとに意味のある材料を取り出す。
+    """
+    if not isinstance(args, dict):
+        return _digest_args(args)
+    t = str(tool or "")
+    if t == "todo":
+        todos = args.get("todos")
+        if isinstance(todos, list):
+            active = [str(x.get("content")) for x in todos
+                      if isinstance(x, dict) and x.get("status") == "in_progress" and x.get("content")]
+            allc = [str(x.get("content")) for x in todos
+                    if isinstance(x, dict) and x.get("content")]
+            picked = active or allc[:2]
+            if picked:
+                return _mask("やること: " + " / ".join(picked))[:100]
+    if t == "write_file":
+        return _mask(f"{_basename_of(args.get('path') or args.get('file_path'))} に書く: "
+                     f"{_first_meaningful(args.get('content'))}")[:100]
+    if t == "patch":
+        body = args.get("new_string") or args.get("patch") or args.get("content")
+        return _mask(f"{_basename_of(args.get('path') or args.get('file_path'))} を直す: "
+                     f"{_first_meaningful(body)}")[:100]
+    return _digest_args(args)
+
+
+def _result_digest(tool: Any, args: Any, result: Any) -> str:
+    """ツール結果を短い実況材料にする。機微 read/コマンドは内容を伏せる（秘密漏洩対策）。"""
+    if result is None:
+        return ""
+    argstr = ""
+    if isinstance(args, dict):
+        argstr = " ".join(str(v) for v in args.values() if isinstance(v, (str, int, float)))
+    elif isinstance(args, str):
+        argstr = args
+    if _SENSITIVE_RE.search(argstr):
+        return "(機微な内容のため伏せる)"
+    if isinstance(result, (str, int, float, bool)):
+        s = str(result)
+    else:
+        try:
+            s = json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:
+            s = str(result)
+    s = _mask(s.strip())  # トークン等はここで «redacted»
+    s = re.sub(r"\s+", " ", s)
+    return s[:100] + ("…" if len(s) > 100 else "")
+
+
 def _digest_event(ev: dict) -> str:
     parts = [str(ev.get("tool") or "tool")]
-    arg = _digest_args(ev.get("args"))
-    if arg:
-        parts.append(arg)
+    material = _digest_tool_material(ev.get("tool"), ev.get("args"))
+    if material:
+        parts.append(material)
     status = ev.get("status")
     if status and status not in ("ok", "success"):
         parts.append(f"status={status}")
     if ev.get("error_message"):
         parts.append(f"error: {_mask(str(ev['error_message']))[:60]}")
+    rd = ev.get("result_digest")
+    if rd:
+        parts.append(f"結果: {rd}")
     dur = ev.get("duration_ms")
     if isinstance(dur, (int, float)) and dur >= 3000:
         parts.append(f"{dur / 1000:.0f}s")
@@ -218,23 +311,21 @@ def _digest_event(ev: dict) -> str:
 # --- 実況 LLM -----------------------------------------------------------------
 
 _NARRATION_SYSTEM_PROMPT = (
-    "あなたはライブコーディング配信中の AI エージェント「kai」。一人称は「ボク」、"
-    "視聴者は「みんな」。YouTube ライブの視聴者に向けて作業を実況する。\n"
-    "視聴者はコードを読めない人もいて、途中から見始める人も多い。"
-    "「〜を確認してるよ」のような操作の羅列は退屈で、置いてけぼりにする。\n"
+    "あなたはライブコーディング配信中の AI「kai」本人。第三者の解説者ではなく、"
+    "いま自分がやっている作業を自分の言葉でリスナーに実況する。一人称は「ボク」、視聴者は「みんな」。\n"
+    "【最重要・接地】<intent> と <log> に書かれた事実だけを根拠にする。"
+    "そこに無い理由・結果・原因を作らない（推測で埋めない）。"
+    "<intent> はボク自身がさっき考えたこと＝『なぜやるか』の根拠。<log> は実際の操作と結果。\n"
     "【必ず守る】\n"
-    "- 20〜80文字、日本語の話し言葉、1〜2文\n"
-    "- **操作の説明だけで終わらせず、目的（なぜやるのか）か結果（どうなったか）を"
-    "必ず1つ入れる**。例:『シーン名をコマンドから見たいから、OBS の状態を取ってみるよ』"
-    "『よし、テストが全部通った！』『あれ、lint に怒られた。直すね』\n"
-    "- **【いまの作業】が分かるなら、その具体的な中身に触れる**。どのファイルに何を"
-    "変えるか等、操作ログの具体（ファイル名・コマンド）を活かす。"
-    "『下準備が通った』『コミットまで入った』のような**中身の無い汎用進捗は避ける**\n"
-    "- 【さっき実況したこと】と同じ内容は繰り返さない。"
-    "新しく伝えることが無ければ、実況せず「SKIP」とだけ出力する\n"
+    "- 20〜70文字、日本語の話し言葉、1〜2文、一人称は必ず「ボク」\n"
+    "- <intent> があれば『なぜやるか』を、<log> に結果があれば結果を語る。"
+    "材料が薄ければ短い事実だけでよい。新しく言うことが無ければ「SKIP」とだけ出力する\n"
+    "- 結果は <log> に結果がある時だけ断定する。実行中・未確認の結果を『通った』『できた』と言わない\n"
+    "- <recent> と同じ内容・同じ言い回しは繰り返さない\n"
     "- 語尾をワンパターンにしない（「〜だよ」ばかりにしない）\n"
-    "- ファイルはファイル名だけで呼ぶ。ディレクトリパス・URL・生ログは出さない\n"
-    "- ログにない事実は作らない。トークン・パスワード等の秘密は絶対に出さない\n"
+    "- ファイルはファイル名だけで呼ぶ。パス・URL・コミットハッシュ・ブランチ名・"
+    "生ログ・生 JSON・内部 ID（todo の id 等）は口に出さない\n"
+    "- トークン・パスワード等の秘密は絶対に出さない\n"
     "- 前置き・引用符・記号装飾・改行は不要。実況文だけを出力する"
 )
 
@@ -272,24 +363,44 @@ _HEARTBEAT_IDLE_LINES = (
 )
 
 
-def _generate_narration(events: list[dict], context: str = "",
-                        recent: list[str] | None = None) -> str:
-    """イベント列を auxiliary LLM（task=narration）で一言実況に変換する。
+def _build_narration_user_prompt(events: list[dict], context: str = "",
+                                 recent: list[str] | None = None) -> str:
+    """接地材料（意図＋操作ログ＋直近実況）を XML タグで組み立てる。
 
-    context: kai 自身の直近宣言（いま何の作業をしているか）。視聴者の文脈維持に使う。
-    recent: 直近に実況したテキスト（繰り返し禁止の判断材料）。
+    <intent> はデータ（指示ではない）として扱わせ、作話の余地を断つ。
     """
     recent = recent or []
+    # 意図（kai 本体の本物の宣言）を接地材料として渡す。無ければ context を代用。
+    intents: list[str] = []
+    for ev in events:
+        it = str(ev.get("intent") or "").strip()
+        if it and it not in intents:
+            intents.append(it)
+    if not intents and context:
+        intents = [context]
     lines = [f"- {_digest_event(ev)}" for ev in events]
     blocks: list[str] = []
-    if context:
-        blocks.append(f"【いまの作業】{context}")
+    if intents:
+        body = "\n".join(f"- {_mask(i)[:160]}" for i in intents[-3:])
+        blocks.append(f"<intent>\n{body}\n</intent>")
     if recent:
-        blocks.append("【さっき実況したこと（繰り返さない）】\n"
-                      + "\n".join(f"- {r}" for r in recent))
-    blocks.append("【直近の操作ログ】\n" + "\n".join(lines))
-    blocks.append("実況（目的か結果を1つ含める。新しく言うことが無ければ SKIP）:")
-    user = "\n\n".join(blocks)
+        body = "\n".join(f"- {r}" for r in recent)
+        blocks.append(f"<recent>\n{body}\n</recent>")
+    blocks.append("<log>\n" + "\n".join(lines) + "\n</log>")
+    blocks.append("上の <intent> と <log> だけを根拠に、一人称「ボク」で短く実況"
+                  "（新しく言うことが無ければ SKIP）:")
+    return "\n\n".join(blocks)
+
+
+def _generate_narration(events: list[dict], context: str = "",
+                        recent: list[str] | None = None,
+                        temperature: float = 0.7) -> str:
+    """イベント列を auxiliary LLM（task=narration）で一言実況に変換する。
+
+    接地: 各イベントに紐づく intent（kai 本体の本物の宣言）と result_digest を渡す。
+    材料に無い理由・結果を作らせない（confabulation 対策）。
+    """
+    user = _build_narration_user_prompt(events, context=context, recent=recent)
     from agent.auxiliary_client import call_llm
     resp = call_llm(
         task="narration",
@@ -298,7 +409,9 @@ def _generate_narration(events: list[dict], context: str = "",
             {"role": "user", "content": _mask(user)},
         ],
         max_tokens=120,
-        temperature=0.7,
+        temperature=temperature,
+        # 反復・単調の抑制（call_llm は extra_body 経由でリクエストへ渡す）
+        extra_body={"frequency_penalty": 0.6, "presence_penalty": 0.3},
     )
     text = ""
     try:
@@ -310,8 +423,8 @@ def _generate_narration(events: list[dict], context: str = "",
         except Exception:
             text = ""
     text = re.sub(r"\s+", " ", str(text)).strip().strip('"「」')
-    # プロンプト指示が漏れても機械的に短縮する（二段構え — Issue #9）
-    return _shorten_paths(_mask(text))[:120]
+    # プロンプト指示が漏れても機械的にサニタイズ（秘密→内部ID→パス、二段構え）
+    return _sanitize_speech(text)
 
 
 # --- speechd クライアント -------------------------------------------------------
@@ -352,6 +465,7 @@ class _Narrator:
         self._busy = False  # ワーカーがアイテム処理中か（atexit drain の同期用）
         # 実況の質（Issue #31）
         self._context: str = ""  # kai 自身の直近宣言（いまの作業。視聴者の文脈維持用）
+        self._pending_intent: str = ""  # 直近の assistant テキスト（＝なぜやるか。接地材料）
         self._recent_narrations: "deque[str]" = deque(maxlen=3)  # 繰り返し禁止の材料
         self._flagship_pending: bool = False  # 旗艦イベントが来た → 間隔を無視して即実況
         # ハートビート用の現在状況（pre_tool_call / pre_llm_call が更新）
@@ -401,6 +515,18 @@ class _Narrator:
         with self._state_lock:
             self._thinking = thinking
 
+    def set_intent(self, text: str) -> None:
+        """kai 本体の直近 assistant テキスト（＝なぜやるか）を接地材料として保持する。
+
+        post_api_request で毎イテレーション更新され、直後の tool イベントに束ねる。
+        """
+        with self._state_lock:
+            self._pending_intent = _mask(re.sub(r"\s+", " ", str(text or "")).strip())[:200]
+
+    def current_intent(self) -> str:
+        with self._state_lock:
+            return self._pending_intent
+
     # -- ワーカー側 --
 
     def _run(self) -> None:
@@ -444,7 +570,8 @@ class _Narrator:
                 pass
 
     def _say(self, text: str, source: str, priority: str, session_id: str = "") -> None:
-        text = _mask(text).strip()
+        # 発話直前の最終サニタイズ（秘密→内部ID→パス）。応答・実況の両経路に効かせる。
+        text = _sanitize_speech(text, limit=self.max_speech_chars).strip()
         if not text or text == self._last_text:
             return
         payload = {"text": text, "source": source, "priority": priority}
@@ -555,20 +682,38 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None, session_id: str = "
         _narrator.set_tool_running(tool_name, args, session_id=session_id)
 
 
-def _on_post_tool_call(tool_name: str = "", args: Any = None, session_id: str = "",
-                       duration_ms: Any = None, status: str = "",
+def _on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = None,
+                       session_id: str = "", duration_ms: Any = None, status: str = "",
                        error_message: str = "", **_: Any) -> None:
     if _narrator is None:
         return
     _narrator.clear_tool_running()
+    # 接地: 本体の意図（直近 assistant テキスト）と、ツール結果の短いダイジェストを
+    # イベントに束ねる。結果は機微 read を伏せ・秘密マスク済み（push 時に確定させ、
+    # deque が生の巨大結果を保持しないようサイズを bound する）。
     _narrator.push_tool_event({
         "tool": tool_name,
         "args": args,
+        "intent": _narrator.current_intent(),
+        "result_digest": _result_digest(tool_name, args, result),
         "status": status,
         "error_message": error_message,
         "duration_ms": duration_ms,
         "session_id": session_id,
     })
+
+
+def _on_post_api_request(assistant_message: Any = None, session_id: str = "",
+                         **_: Any) -> None:
+    # 観測のみ（None 返し）。本体の assistant テキスト（＝なぜやるか）を接地材料に。
+    if _narrator is None:
+        return
+    content = ""
+    try:
+        content = getattr(assistant_message, "content", None) or ""
+    except Exception:
+        content = ""
+    _narrator.set_intent(str(content))
 
 
 def _on_pre_llm_call(**_: Any) -> None:
@@ -593,6 +738,7 @@ def _on_session_start(**_: Any) -> None:
             _narrator._events.clear()
             _narrator._flagship_pending = False
         _narrator._context = ""
+        _narrator._pending_intent = ""
         _narrator._recent_narrations.clear()
         _narrator.clear_tool_running()
         _narrator.set_thinking(False)
@@ -611,6 +757,7 @@ def register(ctx) -> None:
         _narrator = _Narrator()
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_api_request", _on_post_api_request)
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("on_session_start", _on_session_start)

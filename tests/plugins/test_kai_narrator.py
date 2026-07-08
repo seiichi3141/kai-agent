@@ -476,3 +476,100 @@ def test_session_start_clears_events(narrator_mod, monkeypatch):
     n.push_tool_event({"tool": "a", "args": {}})
     narrator_mod._on_session_start(session_id="new")
     assert len(n._events) == 0
+
+
+# --- Phase 1: 接地（意図＋結果）・秘密漏洩・内部ID除去（F-narration 再設計）--------
+
+
+class _Msg:
+    """assistant_message スタブ（.content を持つ）。"""
+
+    def __init__(self, content):
+        self.content = content
+
+
+def test_all_hooks_return_none(narrator_mod, monkeypatch):
+    # 全 hook は観測専用で None を返す（pre_llm_call の context 注入でキャッシュを汚さない）
+    n = narrator_mod._Narrator(start_thread=False)
+    monkeypatch.setattr(narrator_mod, "_narrator", n)
+    assert narrator_mod._on_pre_tool_call(tool_name="t", args={}, session_id="s") is None
+    assert narrator_mod._on_post_tool_call(tool_name="t", args={}, result="r", session_id="s") is None
+    assert narrator_mod._on_post_api_request(assistant_message=_Msg("x"), session_id="s") is None
+    assert narrator_mod._on_pre_llm_call(session_id="s") is None
+    assert narrator_mod._on_post_llm_call(session_id="s", assistant_response="x") is None
+    assert narrator_mod._on_session_start(session_id="s") is None
+
+
+def test_post_api_request_captures_intent_and_binds_to_tool(narrator_mod, monkeypatch):
+    n = narrator_mod._Narrator(start_thread=False)
+    monkeypatch.setattr(narrator_mod, "_narrator", n)
+    # 本体の assistant テキスト（＝なぜやるか）を接地材料に取り込む
+    narrator_mod._on_post_api_request(
+        assistant_message=_Msg("preflight に後片付けの項目を足す。口伝だったのを書き残したい"),
+        session_id="s")
+    assert "後片付け" in n.current_intent()
+    # 直後の tool イベントに intent と result ダイジェストが束ねられる
+    narrator_mod._on_post_tool_call(
+        tool_name="patch",
+        args={"path": "streaming-preflight.md", "new_string": "## 配信後の後片付け"},
+        result="1 file changed, 3 insertions(+)", session_id="s")
+    ev = n._events[-1]
+    assert "後片付け" in ev["intent"]
+    assert "3 insertions" in ev["result_digest"]
+
+
+def test_result_digest_suppresses_sensitive_read(narrator_mod):
+    # .env 等の機微 read は結果本文を伏せる（秘密漏洩対策 S1）
+    d = narrator_mod._result_digest("read_file", {"path": "/home/kai/.env"},
+                                    "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx")
+    assert "sk-abcdefghijklmnop" not in d
+    assert "伏せる" in d
+
+
+def test_secret_in_result_never_leaks(narrator_mod, monkeypatch):
+    # ツール結果に秘密が出ても発話材料に残らない（env 実値・token パターンの両方）
+    monkeypatch.setenv("MY_API_TOKEN", "topsecretvalue12345")
+    monkeypatch.setattr(narrator_mod, "_ENV_SECRETS", narrator_mod._collect_env_secrets())
+    d = narrator_mod._result_digest("terminal", {"command": "echo done"},
+                                    "value MY_API_TOKEN=topsecretvalue12345")
+    assert "topsecretvalue12345" not in d
+    d2 = narrator_mod._result_digest("terminal", {"command": "echo done"},
+                                     "leaked ghp_ABCDEFGHIJKLMNOPQRSTUV0123 here")
+    assert "ghp_ABCDEFGHIJKLMNOPQRSTUV" not in d2
+    assert "«redacted»" in d2
+
+
+def test_digest_todo_uses_content_not_id(narrator_mod):
+    # todo は id（内部識別子）でなく content を材料にする（`issue55-verify` 漏れの根治）
+    d = narrator_mod._digest_event({"tool": "todo", "args": {"todos": [
+        {"id": "issue65-verify", "content": "検証を通す", "status": "in_progress"},
+        {"id": "issue65-pr", "content": "PR を作る", "status": "pending"}]}})
+    assert "検証を通す" in d
+    assert "issue65-verify" not in d
+
+
+def test_digest_write_file_and_patch_include_content(narrator_mod):
+    dw = narrator_mod._digest_event({"tool": "write_file",
+                                     "args": {"path": "README.md", "content": "# 使い方\n手順は…"}})
+    assert "README.md" in dw and "使い方" in dw
+    dp = narrator_mod._digest_event({"tool": "patch",
+                                     "args": {"path": "a.py", "new_string": "def foo(): pass"}})
+    assert "a.py" in dp and "def foo" in dp
+
+
+def test_sanitize_speech_strips_internal_ids(narrator_mod):
+    out = narrator_mod._sanitize_speech('feature/foo-bar に 3a9f1c2 を push、{"k": 1} も見た')
+    assert "feature/foo-bar" not in out
+    assert "3a9f1c2" not in out
+    assert "{" not in out
+    assert "作業ブランチ" in out
+
+
+def test_build_narration_prompt_includes_intent_log_recent(narrator_mod):
+    p = narrator_mod._build_narration_user_prompt(
+        [{"tool": "patch", "args": {"path": "a.md"}, "intent": "後片付けを足す",
+          "result_digest": "3 行追記"}],
+        recent=["さっきの実況"])
+    assert "<intent>" in p and "後片付けを足す" in p
+    assert "<log>" in p
+    assert "<recent>" in p and "さっきの実況" in p
