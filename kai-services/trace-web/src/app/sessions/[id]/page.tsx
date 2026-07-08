@@ -18,6 +18,19 @@ function Item({ e }: { e: TraceEvent }) {
   );
 }
 
+// 操作ごとの OBS スクショ。無ければ（OBS 未起動等）静かに消える。
+function Shot({ session, n }: { session: string; n: number }) {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  const src = `/api/shot?session=${encodeURIComponent(session)}&n=${n}`;
+  return (
+    <a className="shot" href={src} target="_blank" rel="noreferrer">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt="" loading="lazy" onError={() => setOk(false)} />
+    </a>
+  );
+}
+
 function SessionInner({ id }: { id: string }) {
   const date = useSearchParams().get("date") ?? "";
   const [events, setEvents] = useState<TraceEvent[]>([]);
@@ -96,7 +109,14 @@ function SessionInner({ id }: { id: string }) {
               }
               return (
                 <div className="line" key={e.n}>
-                  <div className="cell ops">{side === "ops" && <Item e={e} />}</div>
+                  <div className="cell ops">
+                    {side === "ops" && (
+                      <div className="opswrap">
+                        <Item e={e} />
+                        {e.kind === "tool_call" && <Shot session={id} n={e.n} />}
+                      </div>
+                    )}
+                  </div>
                   <div className="cell say">{side === "say" && <Item e={e} />}</div>
                 </div>
               );

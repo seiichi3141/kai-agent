@@ -246,3 +246,24 @@ main {
 .backlink {
   font-size: 13px;
 }
+
+/* 操作ごとの OBS スクショ（サムネ。クリックで原寸） */
+.opswrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.shot {
+  display: block;
+  line-height: 0;
+}
+.shot img {
+  max-width: 260px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.shot:hover img {
+  border-color: var(--accent);
+}

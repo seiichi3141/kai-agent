@@ -1,0 +1,14 @@
+[Unit]
+Description=kai trace-shots (OBS screenshot per operation)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kai-agent/kai-services/trace-shots
+ExecStart=/usr/bin/python3 -u %h/kai-agent/kai-services/trace-shots/shot_daemon.py
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
