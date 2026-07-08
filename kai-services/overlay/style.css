@@ -17,41 +17,47 @@ body {
   box-sizing: border-box;
 }
 
+/* 字幕エリア: 配信画面の「下帯」に表示する。
+ * デスクトップ（画面キャプチャ）は左上に縮小配置され、その下（y≈979〜1080）が
+ * 字幕帯になる。ここを全幅の帯として使い、字幕を縦横中央に置く。
+ * デスクトップのサイズを変えたら --subtitle-band-h を合わせて調整する。 */
+:root {
+  --subtitle-band-h: 101px; /* 下帯の高さ。デスクトップ下端に合わせて調整 */
+}
+
 #subtitle-layer {
   position: fixed;
-  left: 50%;
-  bottom: 6%;
-  transform: translateX(-50%);
-  width: 90vw;
-  max-width: 1600px;
-  text-align: center;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--subtitle-band-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
   pointer-events: none; /* オーバーレイはクリックを透過させる（配信操作の邪魔をしない） */
 }
 
+/* 元 kai 準拠: 縁取りに頼らず「濃い黒の背景ボックス + 白字」で可読性を確保する。
+ * 太い text-stroke は色と輪郭が混ざって読みにくいので使わない。 */
 #subtitle {
   display: inline-block;
+  max-width: 100%;
+  padding: 10px 28px;
+  background: rgba(0, 0, 0, 0.75);
+  border-radius: 10px;
+
   font-family:
     "Noto Sans CJK JP",
     "Noto Sans JP",
     "Noto Sans",
     sans-serif;
   font-weight: 700;
-  font-size: 48px;
-  line-height: 1.45;
+  font-size: 40px;
+  line-height: 1.4;
   color: #fff;
   white-space: pre-wrap;
   word-break: break-word;
-
-  /* 縁取り: -webkit-text-stroke は角が丸まりがちなので text-shadow の
-   * 多重指定と併用して太めの黒縁に見せる。 */
-  -webkit-text-stroke: 3px #000;
-  paint-order: stroke fill;
-  text-shadow:
-    -2px -2px 3px #000,
-    2px -2px 3px #000,
-    -2px 2px 3px #000,
-    2px 2px 3px #000,
-    0 0 10px rgba(0, 0, 0, 0.8);
 
   opacity: 0;
   transition: opacity 200ms ease-in-out;
