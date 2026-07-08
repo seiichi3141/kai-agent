@@ -1,0 +1,15 @@
+[Unit]
+Description=kai trace web viewer (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kai-agent/kai-services/trace-web
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=PORT=8910
+
+[Install]
+WantedBy=default.target
