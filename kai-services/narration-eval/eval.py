@@ -246,6 +246,23 @@ def confab_tokens_for(text, grounding, generic_allow):
 # Whole-fixture evaluation
 # --------------------------------------------------------------------------
 
+def _fr8_kickoff(per):
+    """FR8 (Issue #72): kickoff quality. A real kickoff explains what/why in
+    2-3 sentences; a bare operation snapshot in the kickoff phase doesn't count
+    as an explanation. Mechanical proxy: length >= 40 chars AND a reason/desire
+    marker ("〜から/ため/ので/たい")."""
+    kick = [p for p in per if p.get("phase") == "kickoff"]
+    why_markers = REASON_MARKERS + ["たい"]
+    explained = any(
+        p["chars"] >= 40 and any(w in p["text"] for w in why_markers) for p in kick)
+    return {
+        "utterances": len(kick),
+        "present": bool(kick),
+        "explains_why": explained,
+        "detail": "配信冒頭で『何を・なぜ』が説明されているか（FR8。参考値・composite 非加算）",
+    }
+
+
 def evaluate(ops, issue, utts):
     grounding = build_grounding(ops, issue)
 
@@ -322,6 +339,11 @@ def evaluate(ops, issue, utts):
             "target_range": [FR9_MIN, FR9_MAX],
             "detail": "1発話の文字数（20〜80字目安）",
         },
+        # FR8 (Issue #72): does the stream OPEN with a kickoff that explains
+        # what/why (2-3 sentences with a reason marker), not just an operation
+        # snapshot? Informational — NOT in the composite, so existing baselines
+        # are unaffected; use it to compare pre/post kickoff implementations.
+        "FR8_kickoff": _fr8_kickoff(per),
         "confabulation": {
             "flagged": bool(session_confab),
             "session_tokens": session_confab,
@@ -402,6 +424,10 @@ def render_human(fixture_name, scores, worst):
     f9 = scores["FR9_length"]
     L.append(f"FR9 文字数         : avg={f9['avg_chars']}  min={f9['min_chars']}  "
              f"max={f9['max_chars']}  range外={f9['out_of_range']} (目標{f9['target_range']})")
+    f8 = scores["FR8_kickoff"]
+    f8_state = ("説明あり" if f8["explains_why"]
+                else "発話あり(説明なし)" if f8["present"] else "なし")
+    L.append(f"FR8 kickoff        : {f8_state} ({f8['utterances']}件・参考値)")
     cf = scores["confabulation"]
     flag = "⚑ FLAGGED" if cf["flagged"] else "clear"
     L.append(f"confabulation      : {flag}  接地外反復語={cf['session_tokens']}")

@@ -689,3 +689,107 @@ def test_sanitize_speech_redacts_high_entropy_token(narrator_mod):
     tok = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
     out = narrator_mod._sanitize_speech(f"これ {tok} を見てほしい")
     assert tok not in out
+
+
+# --- Issue #72: kickoff（配信冒頭の Issue 説明。FR8）------------------------------
+
+
+_TASK_MSG = ("Issue #65: streaming-preflight に配信後の後片付け項目を追加してほしい。"
+             "後片付けが口伝で漏れがちなので数行で書き残したい。完了条件は verify 緑。")
+
+
+def test_kickoff_speaks_once_from_first_user_message(narrator_mod, narrator, monkeypatch):
+    sent = []
+    seen = {}
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+
+    def _gen(material):
+        seen["material"] = material
+        return "今日は配信の後片付け手順をドキュメントに書き足すよ。口伝だと忘れちゃうからね"
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", _gen)
+    monkeypatch.setattr(narrator_mod, "_narrator", narrator)
+    narrator_mod._on_pre_llm_call(user_message=_TASK_MSG, is_first_turn=True, session_id="s1")
+    narrator._maybe_kickoff()
+    assert len(sent) == 1
+    assert sent[0]["source"] == "narrator"
+    assert sent[0]["priority"] == "normal"  # 冒頭説明は看板（滞留 drop の対象にしない）
+    assert sent[0]["session_id"] == "s1"
+    assert "後片付け" in seen["material"]  # 材料は当日タスクの説明
+    # セッションにつき一度だけ
+    narrator._maybe_kickoff()
+    assert len(sent) == 1
+
+
+def test_kickoff_silent_without_material(narrator_mod, narrator, monkeypatch):
+    # 材料が無い・薄い・初ターンでない、のいずれでも kickoff フィラーを出さない
+    sent = []
+    called = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", lambda m: called.append(1) or "x")
+    monkeypatch.setattr(narrator_mod, "_narrator", narrator)
+    narrator._maybe_kickoff()  # 材料なし
+    narrator_mod._on_pre_llm_call(user_message="続けて", is_first_turn=True, session_id="s1")
+    narrator._maybe_kickoff()  # 薄い材料（挨拶・相槌）
+    narrator_mod._on_pre_llm_call(user_message="x" * 100, is_first_turn=False, session_id="s1")
+    narrator._maybe_kickoff()  # 2ターン目以降は材料にしない
+    assert not called and not sent
+
+
+def test_kickoff_skip_is_not_spoken(narrator_mod, narrator, monkeypatch):
+    # LLM が「説明できない」と判断（SKIP）したら沈黙し、それでも消化済みになる
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", lambda m: "SKIP")
+    narrator.set_kickoff_material(_TASK_MSG, session_id="s1")
+    narrator._maybe_kickoff()
+    assert not sent
+    assert narrator._kickoff_done is True
+
+
+def test_kickoff_retries_on_llm_failure(narrator_mod, narrator, monkeypatch):
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+
+    def _boom(m):
+        raise RuntimeError("llm down")
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", _boom)
+    narrator.set_kickoff_material(_TASK_MSG, session_id="s1")
+    narrator._maybe_kickoff()
+    assert not sent
+    assert narrator._kickoff_done is False  # 材料は保持したまま再試行できる
+    import time as _time
+    assert narrator._narrate_backoff_until > _time.monotonic()
+    narrator._narrate_backoff_until = 0.0
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", lambda m: "今日はドキュメント整備をやるよ、後片付けの手順を残したいんだ")
+    narrator._maybe_kickoff()
+    assert len(sent) == 1
+
+
+def test_kickoff_gives_up_when_material_is_stale(narrator_mod, narrator, monkeypatch):
+    sent = []
+    called = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_kickoff", lambda m: called.append(1) or "x")
+    narrator.set_kickoff_material(_TASK_MSG, session_id="s1")
+    import time as _time
+    narrator._kickoff_material_ts = _time.monotonic() - 10_000  # 材料が古い
+    narrator._maybe_kickoff()
+    assert not called and not sent
+    assert narrator._kickoff_done is True  # 諦めて以後は試みない
+
+
+def test_kickoff_resets_on_session_start(narrator_mod, narrator, monkeypatch):
+    monkeypatch.setattr(narrator_mod, "_narrator", narrator)
+    narrator.set_kickoff_material(_TASK_MSG, session_id="s1")
+    narrator._kickoff_done = True
+    narrator_mod._on_session_start(session_id="s2")
+    assert narrator._kickoff_material == ""
+    assert narrator._kickoff_done is False
+
+
+def test_user_message_text_handles_multimodal(narrator_mod):
+    assert narrator_mod._user_message_text("plain") == "plain"
+    parts = [{"type": "text", "text": "本文A"}, {"type": "image_url", "image_url": {}},
+             {"type": "text", "text": "本文B"}]
+    out = narrator_mod._user_message_text(parts)
+    assert "本文A" in out and "本文B" in out

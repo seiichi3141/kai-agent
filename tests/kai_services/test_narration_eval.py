@@ -36,6 +36,24 @@ def test_fr5_no_false_positive_on_normal_narration():
     assert ev.check_fr5("ドキュメントに後片付けの手順を足したよ") == []
 
 
+def test_fr8_kickoff_quality():
+    # FR8 (Issue #72): 操作スナップショットだけの kickoff は「説明」と数えない
+    ev = _load_eval()
+    op_only = [{"phase": "kickoff", "text": "verify.sh の中身を見て、テストの入口をつかむよ。",
+                "chars": 22}]
+    real = [{"phase": "kickoff",
+             "text": "今日は配信あとの後片付け手順をドキュメントに書き足すよ。"
+                     "口伝だと漏れちゃうから、ちゃんと残しておきたいんだ。",
+             "chars": 55}]
+    none = [{"phase": "work", "text": "テストを回してるよ", "chars": 9}]
+    r1 = ev._fr8_kickoff(op_only)
+    assert r1["present"] and not r1["explains_why"]
+    r2 = ev._fr8_kickoff(real)
+    assert r2["present"] and r2["explains_why"]
+    r3 = ev._fr8_kickoff(none)
+    assert not r3["present"] and not r3["explains_why"]
+
+
 def test_fr5_baseline_fixtures_unchanged():
     # 既存 fixture の録音発話に新パターンの誤検出が無い（ベースライン非退行）
     ev = _load_eval()
