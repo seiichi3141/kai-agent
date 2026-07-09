@@ -25,7 +25,7 @@
 
   ```bash
   curl -fsS http://127.0.0.1:8900/health
-  curl -fsS http://127.0.0.1:8901/health
+  curl -fsS http://127.0.0.1:8930/health
   ```
 
 - [ ] **config.yaml に `plugins.entries.kai_ide.allow_tool_override: true` があること。**
@@ -52,10 +52,10 @@
   ```
 
 - [ ] **VSCode ブリッジ（127.0.0.1:8920）の疎通があること。** kai が VSCode を開く・
-      タブを閉じる・編集を見せる操作の入口なので、ローカル HTTP が応答することを確認する。
+      タブを閉じる・編集を見せる操作の入口なので、実在する `/state` が応答することを確認する。
 
   ```bash
-  curl -fsS http://127.0.0.1:8920/health
+  curl -fsS http://127.0.0.1:8920/state
   ```
 
 - [ ] **stage.sh で kai-term / kai-brain が立つこと。** 配信に映る作業端末
