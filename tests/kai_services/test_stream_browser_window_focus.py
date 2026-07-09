@@ -139,3 +139,33 @@ def test_cmd_open_denied_url_does_not_raise_window(sb, monkeypatch):
     with pytest.raises(SystemExit):
         sb.cmd_open("https://evil.example.com/phish")
     assert "class" not in raised
+
+
+# --- _CDP の Origin 抑止（Issue #104 回帰）--------------------------------------
+
+
+def test_cdp_connects_with_suppress_origin(sb, monkeypatch):
+    """websocket-client は既定で Origin を送り、--remote-allow-origins 制限下の
+    Chromium に 403 で拒否される。suppress_origin=True での接続を固定する。"""
+    import sys
+    import types
+
+    calls = {}
+
+    def _fake_create_connection(url, **kw):
+        calls["url"] = url
+        calls["kwargs"] = kw
+
+        class _Ws:
+            def close(self):
+                pass
+
+        return _Ws()
+
+    fake_ws = types.ModuleType("websocket")
+    fake_ws.create_connection = _fake_create_connection
+    monkeypatch.setitem(sys.modules, "websocket", fake_ws)
+
+    sb._CDP("ws://127.0.0.1:9222/devtools/page/x")
+    assert calls["url"] == "ws://127.0.0.1:9222/devtools/page/x"
+    assert calls["kwargs"].get("suppress_origin") is True

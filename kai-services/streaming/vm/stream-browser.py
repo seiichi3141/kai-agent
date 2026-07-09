@@ -42,7 +42,10 @@ CHROMIUM_FLAGS = [
     # CDP WebSocket の Origin 検査を無効化する "*" は使わない（Issue #77 M-a）。
     # 外部由来 URL（Issue リンク先）を開く運用なので、訪問先ページが CDP に
     # 接続してブラウザを完全制御（Runtime.evaluate・セッション読取）する余地を
-    # 断つ。本 CLI の websocket クライアントは Origin を送らないため影響なし。
+    # 断つ。本 CLI の websocket クライアントは suppress_origin=True で Origin を
+    # 送らない（Issue #104 — websocket-client は既定で URL 由来の Origin を送る
+    # ため 403 になる。ページ内スクリプト由来の接続は Origin を消せないので、
+    # この allowlist はページからの乗っ取りを引き続き遮断する）。
     "--remote-allow-origins=http://localhost",
     "--disable-gpu",  # llvmpipe（GPU なし）。PoC で静的ページは CPU ほぼ 0
     "--no-first-run",
@@ -105,7 +108,9 @@ class _CDP:
 
     def __init__(self, ws_url: str) -> None:
         import websocket  # python3-websocket（obsws.py と同じ。接続時のみ必要）
-        self._ws = websocket.create_connection(ws_url, timeout=10)
+        # suppress_origin: websocket-client は既定で Origin ヘッダを送り、
+        # --remote-allow-origins 制限下の Chromium が 403 で拒否する（Issue #104）
+        self._ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
         self._id = 0
 
     def call(self, method: str, params: dict | None = None) -> dict:
