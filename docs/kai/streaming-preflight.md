@@ -68,6 +68,54 @@
   tmux has-session -t kai-brain
   ```
 
+## 秘密・認証・通知ゲート（赤なら配信しない）
+
+配信画面は VM デスクトップの**全画面キャプチャ**であり、画面に映った生ピクセルは
+narrator / trace / speechd の三層マスクの対象外（Issue #76）。ターミナル・VSCode・
+ダイアログに秘密が一瞬でも映れば漏洩なので、以下は 1 つでも赤なら配信を開始しない。
+
+- [ ] **gh 認証が完了していること（配信中に認証画面を出さない）。** デバイスコード
+      URL や OAuth 画面が配信中に出ると、コード・アカウント情報が画面に映る。
+      認証は必ず配信前に完結させる（`m4-runbook.md` §2.1）。
+
+  ```bash
+  gh auth status
+  ```
+
+- [ ] **VSCode に機微ファイルのタブが無いこと。** `.env` / `~/.hermes/config.yaml` /
+      鍵ファイルを開いたタブが残っていると、配信開始と同時に中身が映る。
+
+  ```bash
+  # ブリッジの /state にタブ一覧が出る。機微パスが 1 件も無ければ OK
+  curl -fsS http://127.0.0.1:8920/state \
+    | grep -Eic '\.env|config\.yaml|\.pem|id_rsa|id_ed25519|\.ssh' \
+    && echo 'NG: 機微タブが開いている' || echo 'OK'
+  ```
+
+- [ ] **シェル履歴に秘密を表示するコマンドが残っていないこと。** 配信中に端末で
+      履歴を遡る（Ctrl-R・上キー）と `printenv` や `cat .env` の実行が再現されうる。
+      残っていたら配信前に履歴を消す。
+
+  ```bash
+  grep -En '(^|[;&| ])(printenv|env)([ ;&|]|$)|cat .*\.env' ~/.bash_history \
+    && echo 'NG: 履歴に秘密表示コマンド' || echo 'OK'
+  # 消す場合:
+  history -c && > ~/.bash_history
+  ```
+
+- [ ] **デスクトップ通知・ダイアログが抑止されていること。** GNOME 通知（メール・
+      アップデート）やキーリングのパスワードダイアログが配信画面に被さらないようにする
+      （キーリングは空パスワードのデフォルトキーリング設定済みが前提）。
+
+  ```bash
+  gsettings set org.gnome.desktop.notifications show-banners false
+  gsettings get org.gnome.desktop.notifications show-banners   # false なら OK
+  ```
+
+- [ ] **OBS の Settings 画面が閉じていること。** Settings > Stream には**ストリーム
+      キーが平文で表示される**。配信前に Settings を閉じ、配信中は開かない
+      （キーが映ったら即 `broadcast.sh stream-stop` → キー再発行）。
+
 ## 配信後の後片付け
 
 - [ ] `stage.sh` で起動した補助サーバを停止し、次回のポート衝突を防ぐ。
