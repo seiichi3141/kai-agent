@@ -54,6 +54,19 @@ def test_fr8_kickoff_quality():
     assert not r3["present"] and not r3["explains_why"]
 
 
+def test_apply_candidates_excludes_skip(tmp_path):
+    # 候補の "SKIP"（plugin の沈黙センチネル）は発話でないので採点から除外される
+    ev = _load_eval()
+    utts = [{"text": "録音1", "source": "narrator"},
+            {"text": "録音2", "source": "narrator"}]
+    cand = tmp_path / "cand.json"
+    cand.write_text(json.dumps(["新しい実況だよ", "SKIP"]), encoding="utf-8")
+    out, n_skipped = ev.apply_candidates(utts, [], str(cand))
+    assert n_skipped == 1
+    assert len(out) == 1
+    assert out[0]["text"] == "新しい実況だよ"
+
+
 def test_fr5_baseline_fixtures_unchanged():
     # 既存 fixture の録音発話に新パターンの誤検出が無い（ベースライン非退行）
     ev = _load_eval()

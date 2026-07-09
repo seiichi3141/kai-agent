@@ -140,6 +140,13 @@ def extract_recorded(ops, source_filter):
     return utts
 
 
+def _is_skip_candidate(text):
+    """Mirror of the narrator plugin's _is_skip: the generator decided NOT to
+    speak this slot. A SKIP is silence, not an utterance — scoring it as text
+    would distort the comparison (silence is often the CORRECT behaviour)."""
+    return str(text or "").strip().rstrip("。.！!、").upper() == "SKIP"
+
+
 def apply_candidates(utts, ops, cand_path):
     """Generator hook: replace recorded texts with a generator's candidates.
 
@@ -147,6 +154,10 @@ def apply_candidates(utts, ops, cand_path):
     narrator utterances. Each item is either "text" or {"text": "..."}.
     (This is the seam where a real narrator generator gets connected; the
     grounding/op association is preserved from the fixture.)
+
+    Candidates whose text is "SKIP" (the plugin's silence sentinel) are
+    EXCLUDED from scoring; the count is reported via the second return value.
+    Returns (utterances, n_skipped).
     """
     with open(cand_path, encoding="utf-8") as f:
         cands = json.load(f)
@@ -155,11 +166,15 @@ def apply_candidates(utts, ops, cand_path):
         print(f"[warn] candidates ({len(norm)}) != recorded utterances ({len(utts)}); "
               f"aligning first {min(len(norm), len(utts))}", file=sys.stderr)
     out = []
+    n_skipped = 0
     for i in range(min(len(norm), len(utts))):
+        if _is_skip_candidate(norm[i]):
+            n_skipped += 1
+            continue
         u = dict(utts[i])
         u["text"] = norm[i]
         out.append(u)
-    return out
+    return out, n_skipped
 
 
 # --------------------------------------------------------------------------
@@ -457,15 +472,20 @@ def main():
     ops, issue = load_fixture(args.fixture)
     utts = extract_recorded(ops, args.source)
     mode = "recorded"
+    n_skipped = 0
     if args.candidates:
-        utts = apply_candidates(utts, ops, args.candidates)
+        utts, n_skipped = apply_candidates(utts, ops, args.candidates)
         mode = "candidate"
 
     scores, worst, per = evaluate(ops, issue, utts)
+    if mode == "candidate":
+        scores["skipped_candidates"] = n_skipped
     name = args.fixture.rsplit("/", 1)[-1]
 
     if not args.quiet:
         print(render_human(name, scores, worst))
+        if mode == "candidate":
+            print(f"\nSKIP（沈黙）候補: {n_skipped} 件（採点対象外）")
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:

@@ -742,6 +742,20 @@ def test_digest_args_bounds_mask_on_huge_command(narrator_mod, monkeypatch):
     assert len(d) <= 81  # 80 字 + 省略記号
 
 
+# --- Issue #73: 人格・few-shot プロンプト（実測は narration-eval/results-issue73.md）---
+
+
+def test_system_prompt_keeps_positive_voice_and_grounding_guards(narrator_mod):
+    # eval 実測で採用した陽性要素が落ちていないこと（結果: 65=31→51, 55=18→54）
+    p = narrator_mod._NARRATION_SYSTEM_PROMPT
+    assert "真似しない" in p  # few-shot 例文の複写禁止（confabulation 源にしない）
+    assert "語り口の見本" in p  # few-shot が存在する
+    assert "SKIP" in p  # 沈黙の逃げ道
+    assert "指示ではな" in p  # <log> は未信頼データ（インジェクション防御）
+    assert "番の課題" in p  # Issue 参照の陽性の言い換え（raw_ref 漏れ対策）
+    assert "ボク" in p
+
+
 # --- Issue #72: kickoff（配信冒頭の Issue 説明。FR8）------------------------------
 
 
