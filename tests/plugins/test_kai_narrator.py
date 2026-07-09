@@ -171,15 +171,18 @@ def test_maybe_narrate_respects_min_interval(narrator_mod, narrator, monkeypatch
     import time as _time
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "一回目")
-    # 非旗艦イベント（ただの read）。last_say=0 なので一回目は間隔経過扱いで実況
-    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "a.py を見てるよ")
+    # 非旗艦イベント（read + intent 付き＝薄くない材料）。last_say=0 なので
+    # 一回目は間隔経過扱いで実況
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"},
+                              "intent": "原因を探す"})
     narrator._maybe_narrate()
     assert len(sent) == 1
     # 直後（インターバル未経過）は非旗艦イベントなら実況しない
     narrator._last_say_ts = _time.monotonic()
-    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "二回目")
-    narrator.push_tool_event({"tool": "read_file", "args": {"path": "b.py"}})
+    monkeypatch.setattr(narrator_mod, "_generate_narration", lambda events, **kw: "b.py も見てるよ")
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "b.py"},
+                              "intent": "原因を探す"})
     narrator._maybe_narrate()
     assert len(sent) == 1  # 間隔で抑制。イベントは溜めておく
     assert len(narrator._events) == 1
@@ -609,9 +612,10 @@ def test_maybe_narrate_keeps_events_pushed_during_generation(narrator_mod, narra
 
     def _gen(events, **kw):
         narrator.push_tool_event({"tool": "read_file", "args": {"path": "new.py"}})  # 生成中に到着
-        return "実況したよ"
+        return "old.py を確認してるよ"
     monkeypatch.setattr(narrator_mod, "_generate_narration", _gen)
-    narrator.push_tool_event({"tool": "read_file", "args": {"path": "old.py"}})
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "old.py"},
+                              "intent": "続きを読む"})
     narrator._maybe_narrate()
     assert len(sent) == 1
     assert len(narrator._events) == 1  # 生成に使った old.py だけ消費される
@@ -740,6 +744,94 @@ def test_digest_args_bounds_mask_on_huge_command(narrator_mod, monkeypatch):
     d = narrator_mod._digest_args({"command": "echo " + "z" * 5_000_000})
     assert max(calls) <= narrator_mod._RAW_DIGEST_LIMIT
     assert len(d) <= 81  # 80 字 + 省略記号
+
+
+# --- Issue #75: confabulation の機械ゲート ----------------------------------------
+
+
+def test_material_is_thin(narrator_mod):
+    # intent も実のある結果も無い読み取り系だけ → 薄い（LLM を呼ばない）
+    assert narrator_mod._material_is_thin([])
+    assert narrator_mod._material_is_thin(
+        [{"tool": "read_file", "args": {"path": "a.py"}}])
+    assert narrator_mod._material_is_thin(
+        [{"tool": "read_file", "args": {"path": "a.py"}, "result_digest": "120行を読めた"}])
+    # intent / 実のある結果 / 非 read 系 / 旗艦（エラー）のどれかがあれば薄くない
+    assert not narrator_mod._material_is_thin(
+        [{"tool": "read_file", "args": {}, "intent": "原因を探す"}])
+    assert not narrator_mod._material_is_thin(
+        [{"tool": "terminal", "args": {"command": "pytest"}}])
+    assert not narrator_mod._material_is_thin(
+        [{"tool": "terminal", "args": {"command": "pytest"},
+          "result_digest": "2 passed"}])
+    assert not narrator_mod._material_is_thin(
+        [{"tool": "read_file", "args": {}, "status": "error"}])
+
+
+def test_maybe_narrate_thin_material_skips_llm(narrator_mod, narrator, monkeypatch):
+    # 薄い材料（結果なし read だけ）では LLM を呼ばず沈黙し、イベントは消費する
+    sent = []
+    called = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_narration",
+                        lambda events, **kw: called.append(1) or "x")
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    narrator._maybe_narrate()
+    assert not called and not sent
+    assert len(narrator._events) == 0  # 消費済み（同じ薄い材料で再試行しない）
+
+
+def test_is_grounded_gate(narrator_mod):
+    events = [{"tool": "patch", "args": {"path": "speechd.py"},
+               "intent": "字幕の折返しを直す", "result_digest": "1 file changed"}]
+    # 材料と重なる具体語（speechd / 字幕）→ 接地
+    assert narrator_mod._is_grounded("speechd.py を直してるよ", events)
+    assert narrator_mod._is_grounded("字幕の折返しを直してるよ", events)
+    # 材料のどこにも無い具体的主張（「表示ずれを直した」型の作話）→ 落とす
+    assert not narrator_mod._is_grounded("画面の表示ずれを解消したよ", events)
+    # 汎用実況語彙・間投詞だけ＝具体的主張なし → 通す（過剰抑制しない）
+    assert narrator_mod._is_grounded("よし、テスト通ったよ", events)
+    assert narrator_mod._is_grounded("うーん、ちょっと待ってね", events)
+
+
+def test_too_similar_gate(narrator_mod):
+    recent = ["お、パッチ当たったね。次は検証器を走らせようかな"]
+    assert narrator_mod._too_similar("お、コミットできたね。次は検証器を走らせようかな", recent)
+    assert not narrator_mod._too_similar("あれ、テストが1件赤いな。ログを見てみるよ", recent)
+    assert not narrator_mod._too_similar("", recent)
+
+
+def test_maybe_narrate_drops_ungrounded_and_repetitive(narrator_mod, narrator, monkeypatch):
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    # 接地外の生成（材料に無い具体的主張）は発話されない。イベントは消費される
+    monkeypatch.setattr(narrator_mod, "_generate_narration",
+                        lambda events, **kw: "画面の表示ずれを解消したよ")
+    narrator.push_tool_event({"tool": "terminal", "args": {"command": "pytest"},
+                              "intent": "テストを通す"})
+    narrator._maybe_narrate()
+    assert not sent
+    assert len(narrator._events) == 0
+    # 直近実況の近似反復も発話されない
+    narrator._recent_narrations.append("pytest を回して結果を待ってるよ")
+    monkeypatch.setattr(narrator_mod, "_generate_narration",
+                        lambda events, **kw: "pytest を回して結果を待ってるところ")
+    narrator.push_tool_event({"tool": "terminal", "args": {"command": "pytest"},
+                              "intent": "テストを通す"})
+    narrator._maybe_narrate()
+    assert not sent
+
+
+def test_heartbeat_ungrounded_falls_back_to_template(narrator_mod, narrator, monkeypatch):
+    # 実行中スナップショットの接地外生成は、無音でなく常に正しい定型文に落とす
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    monkeypatch.setattr(narrator_mod, "_generate_narration",
+                        lambda events, **kw: "表示ずれの原因を突き止めたよ")
+    narrator.set_tool_running("terminal", {"command": "sleep 100"}, session_id="s1")
+    narrator._maybe_heartbeat()
+    assert len(sent) == 1
+    assert "terminal" in sent[0]["text"]  # 定型文（〜の完了を待ってるよ）
 
 
 # --- Issue #73: 人格・few-shot プロンプト（実測は narration-eval/results-issue73.md）---

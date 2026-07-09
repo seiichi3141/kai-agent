@@ -408,6 +408,109 @@ def _is_skip(text: str) -> bool:
     return text.strip().rstrip("。.！!、").upper() == "SKIP"
 
 
+# --- confabulation の機械ゲート（Issue #75）--------------------------------------
+#
+# 接地材料を渡すこと（Phase 1）は confabulation 防止の必要条件だが十分条件では
+# ない。小型 LLM は「SKIP しろ」を無視して埋めにいく。プロンプトに頼らず、
+# (a) 生成前: 材料が薄い batch は LLM を呼ばず SKIP、
+# (b) 生成後: 生成文の内容語が接地材料と1つも重ならなければ捨てる、
+# (c) 反復: 直近実況との bigram 類似が高ければ捨てる（penalty は本番バックエンド
+#     openai-codex では黙って捨てられることをコード実測済み — auxiliary_client の
+#     _CodexCompletionsAdapter は extra_body から reasoning しか変換しない）。
+# 完全な runtime 検証は重いので、本命バックストップは narration-eval ハーネス。
+
+# 観測だけで материал にならない読み取り系ツール（意図も結果も無いときの薄さ判定）
+_THIN_TOOLS = {"read_file", "search_files", "list_files", "ls", "read", "grep"}
+
+# 内容語トークン（narration-eval の confabulation チェックと同じ切り方）
+_CONTENT_TOKEN_RE = re.compile(r"[一-鿿々〆]{2,}|[゠-ヿー]{2,}|[A-Za-z][A-Za-z0-9_]{2,}")
+
+# 具体的主張を含まない汎用実況語彙（narration-eval の GENERIC_ALLOW と同思想＋
+# 開発の定番カタカナ語）。これだけで構成された発話は「作話」になり得ないので
+# 接地ゲートの対象にしない。翻訳語（pytest→テスト等）の誤抑制も防ぐ。
+# 精度（過剰抑制しない）優先 — 取りこぼしは本命バックストップの narration-eval が拾う。
+_GENERIC_TOKENS = {
+    "準備", "状態", "確認", "用意", "感じ", "区切り", "一区切り", "まとめ", "安全",
+    "予定", "作業", "進め", "進行", "変更", "中身", "入口", "手元", "内容", "方針",
+    "原因", "自体", "全部", "最初", "最後", "今日", "対応", "検証", "実装", "修正",
+    "確か", "完了", "実行", "結果", "成功", "失敗", "次回", "課題",
+    "テスト", "エラー", "コミット", "プッシュ", "ファイル", "ブランチ", "パッチ",
+    "ビルド", "マージ", "インストール", "ログ", "チェック", "レビュー",
+    "ドキュメント", "スクリプト", "コマンド", "リモート",
+}
+
+# 構造ダイジェスト（#71 の read/search 縮退）。これしか無い batch は材料が薄い。
+_STRUCTURAL_DIGEST_RE = re.compile(r"\d+行を読めた|空だった")
+
+
+def _material_is_thin(events: list[dict]) -> bool:
+    """生成前ゲート: intent も実のある結果も無い読み取り系だけの batch か。
+
+    このとき LLM に渡る材料は「read_file — foo.py — N行を読めた」の列だけで、
+    語れる事実（なぜ・何が起きたか）が無い。小型 LLM は埋めにいく（作話源）ので、
+    LLM を呼ばずに沈黙する。旗艦イベント（エラー等）が混ざっていれば薄くない。
+    """
+    if not events:
+        return True
+    for ev in events:
+        if str(ev.get("intent") or "").strip():
+            return False
+        digest = str(ev.get("result_digest") or "").strip()
+        if digest and not _STRUCTURAL_DIGEST_RE.fullmatch(digest):
+            return False
+        if _is_flagship(ev):
+            return False
+        if str(ev.get("tool") or "") not in _THIN_TOOLS:
+            return False
+    return True
+
+
+def _is_grounded(text: str, events: list[dict], context: str = "") -> bool:
+    """生成後ゲート: 生成文の具体語が接地材料と1つも重ならなければ False。
+
+    「表示ずれを直した」型の完全な作話（材料のどの語とも重ならない具体的主張）を
+    機械的に落とす。汎用実況語彙・間投詞だけの発話は具体的主張が無いので通す。
+    部分一致＋2字語幹（変更点←変更）は narration-eval の confab チェックと同基準。
+    """
+    tokens = _CONTENT_TOKEN_RE.findall(text or "")
+    concrete = [t for t in tokens
+                if t not in _GENERIC_TOKENS and t[:2] not in _GENERIC_TOKENS]
+    if not concrete:
+        return True  # 具体的主張なし＝作話しようがない
+    material_parts = [context or ""]
+    for ev in events:
+        material_parts.append(_digest_event(ev))
+        material_parts.append(str(ev.get("intent") or ""))
+    material = " ".join(material_parts)
+    for tok in concrete:
+        if tok in material:
+            return True
+        if len(tok) >= 3 and tok[:2] in material:
+            return True
+    return False
+
+
+def _bigrams(s: str) -> set:
+    s = re.sub(r"\s+", "", s or "")
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _too_similar(text: str, recent: list[str], threshold: float = 0.5) -> bool:
+    """反復ゲート: 直近実況との文字 bigram Jaccard が閾値以上なら捨てる。
+
+    penalty（frequency/presence）は openai-codex バックエンドで黙って無視される
+    ため、機械的な近似重複フィルタで補う。閾値は narration-eval の FR6 と同じ 0.5。
+    """
+    bg = _bigrams(text)
+    if not bg:
+        return False
+    for prev in (recent or [])[-3:]:
+        pb = _bigrams(prev)
+        if pb and len(bg & pb) / len(bg | pb) >= threshold:
+            return True
+    return False
+
+
 # --- kickoff（配信冒頭の Issue 説明。FR8 / Issue #72）---------------------------
 
 # 当日タスク（最初のユーザーメッセージ＝SOUL.md 経由の Issue 説明等）を材料に、
@@ -810,23 +913,37 @@ class _Narrator:
             session_id = str(events[-1].get("session_id") or "")
             context = self._context
             recent = list(self._recent_narrations)
+        # 生成前ゲート（#75）: 材料が薄い batch は LLM を呼ばず沈黙。イベントは
+        # 消費する（意図や結果が付いた次のイベントでまた材料になる）
+        if _material_is_thin(events):
+            self._consume_events(pending)
+            return
         try:
             text = _generate_narration(events, context=context, recent=recent)
         except Exception:
             self._narrate_backoff_until = time.monotonic() + 10.0
             return  # イベントは保持したまま次回に再試行（旗艦なら間隔無視で即）
+        self._consume_events(pending)
+        if not text or _is_skip(text):
+            return
+        # 生成後ゲート（#75）: 接地材料と重ならない作話・直近実況の近似反復を捨てる
+        if not _is_grounded(text, events, context=context):
+            return
+        if _too_similar(text, recent):
+            return
+        self._say(text, source="narrator", priority="low", session_id=session_id)
+        self._recent_narrations.append(text)
+
+    def _consume_events(self, pending: list) -> None:
+        """生成に使った分（スナップショット時点のイベント）だけ取り除き、
+        生成中に積まれた新規イベントは次回の材料として保持する。"""
         with self._events_lock:
-            # 生成に使った分（スナップショット時点のイベント）だけ取り除き、
-            # 生成中に積まれた新規イベントは次回の材料として保持する
             for ev in pending:
                 try:
                     self._events.remove(ev)
                 except ValueError:
                     pass
             self._flagship_pending = any(_is_flagship(e) for e in self._events)
-        if text and not _is_skip(text):
-            self._say(text, source="narrator", priority="low", session_id=session_id)
-            self._recent_narrations.append(text)
 
     def _maybe_heartbeat(self) -> None:
         """無音が続いたら現在状況を一言実況する（Issue #10）。
@@ -857,8 +974,13 @@ class _Narrator:
             try:
                 text = _generate_narration([ev], context=self._context,
                                            recent=list(self._recent_narrations))
+                # 接地ゲート（#75）: 実行中スナップショットは材料が薄く作話しやすい。
+                # 接地外の生成は常に正しい定型文に落とす
+                if text and not _is_skip(text) and not _is_grounded(
+                        text, [ev], context=self._context):
+                    raise ValueError("ungrounded heartbeat narration")
             except Exception:
-                # 実況 LLM 不達でも無音は避ける（定型文フォールバック）
+                # 実況 LLM 不達・接地外でも無音は避ける（定型文フォールバック）
                 tool = str(running.get("tool") or "コマンド")
                 text = f"いま {tool} の完了を待ってるよ。もう {elapsed_s} 秒くらい経ったかな"
             if text and not _is_skip(text):

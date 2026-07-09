@@ -78,6 +78,22 @@
 - 秘密漏洩 fixture、生成 temp=0 の候補ランナー、録音＝参考値／再生成＝本命の分離を明文化。
 - 較正済み LLM ジャッジは**任意**（機械チェックで足りない FR2/FR7 品質を補うときだけ）。
 
+### confabulation 防御の位置づけ（Issue #75 で確定）
+
+接地材料（Phase 1）は confabulation 防止の**必要条件だが十分条件ではない**。防御は三層:
+
+1. **runtime の機械ゲート**（`plugins/kai_narrator/` — 生成前: 薄い材料で LLM を呼ばない
+   `_material_is_thin` / 生成後: 接地外の具体的主張を落とす `_is_grounded`・近似反復を落とす
+   `_too_similar`）。軽量ヒューリスティックであり完全ではない（precision 優先＝過剰抑制しない側に倒す）。
+2. **narration-eval ハーネスが本命バックストップ**。プロンプト・ゲートの変更は必ず
+   `generate.py`（temp=0・実プラグインのプロンプト）→ `eval.py` の数値比較を通してから採用する。
+3. penalty（`frequency/presence_penalty`）は**バックエンド依存**: ローカル OpenAI 互換
+   （llama.cpp）では実効を A/B 実測済み。**openai-codex（本番 narration の実解決先）では
+   auxiliary_client の `_CodexCompletionsAdapter` が extra_body から reasoning しか変換せず
+   黙って捨てる**（コード実測 2026-07-09）。よって反復抑制は penalty に依存せず、
+   `_too_similar`（bigram Jaccard ≥ 0.5）が機械層として常に効く。実測記録 =
+   `kai-services/narration-eval/results-issue75.md`。
+
 ## Defer（ドライランで残課題が見えてから）
 
 recorder（`turn_intent` 充填）・本格 LLM ジャッジ・phrase-bank・翻訳 allowlist 一式・3 フェーズ・

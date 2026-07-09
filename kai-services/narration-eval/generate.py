@@ -143,13 +143,23 @@ def generate(plugin, ops) -> list[dict]:
             src = sp.get("source")
             if src == "narrator":
                 events = pending[-8:] or [op_to_event(op)]
-                try:
-                    text = plugin._generate_narration(
-                        events, context=context, recent=recent[-3:])
-                except Exception as e:
-                    print(f"[error] generation failed: {e}", file=sys.stderr)
-                    text = ""
-                text = text if text else "SKIP"
+                # plugin の機械ゲート（#75）を本番と同じ順で適用する:
+                # 生成前（薄い材料）→ 生成 → 生成後（接地・近似反復）
+                if plugin._material_is_thin(events):
+                    text = "SKIP"
+                else:
+                    try:
+                        text = plugin._generate_narration(
+                            events, context=context, recent=recent[-3:])
+                    except Exception as e:
+                        print(f"[error] generation failed: {e}", file=sys.stderr)
+                        text = ""
+                    text = text if text else "SKIP"
+                    if not plugin._is_skip(text):
+                        if not plugin._is_grounded(text, events, context=context):
+                            text = "SKIP"
+                        elif plugin._too_similar(text, recent[-3:]):
+                            text = "SKIP"
                 out.append({"text": text, "recorded": sp.get("text", ""),
                             "phase": op.get("phase")})
                 pending = []
