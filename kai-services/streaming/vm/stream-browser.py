@@ -130,6 +130,48 @@ def _connect_page() -> _CDP:
     return _CDP(page["webSocketDebuggerUrl"])
 
 
+# --- ウィンドウ前面化・最大化（Issue #95）---------------------------------------
+#
+# 第5回リハーサルで「操作対象が見えにくい」（ブラウザが小さい/他ウィンドウに隠れる）
+# 指摘を受け、open 実行のたびに対象の Chromium ウィンドウを最大化・前面化する。
+# wmctrl は broadcast.sh の OBS 終了処理で既に使っている依存（kai-vm には導入済み）。
+# wmctrl 不在・X 不在（配信外の開発機等）では例外を握りつぶして何もしない
+# （配信装飾の失敗で本処理=URL を開く、を止めない）。
+_BROWSER_WM_CLASS = "chromium"
+
+
+def _wmctrl_find_window(class_substr: str) -> str | None:
+    """wmctrl -lx から WM_CLASS に class_substr（小文字部分一致）を含む先頭ウィンドウの ID。"""
+    try:
+        r = subprocess.run(["wmctrl", "-lx"], capture_output=True, timeout=3, text=True)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    needle = class_substr.lower()
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 3:
+            continue
+        if needle in parts[2].lower():
+            return parts[0]
+    return None
+
+
+def _raise_and_maximize(class_substr: str) -> None:
+    """class_substr にマッチするウィンドウを最大化＋前面化する（best-effort）。"""
+    try:
+        win_id = _wmctrl_find_window(class_substr)
+        if not win_id:
+            return
+        subprocess.run(
+            ["wmctrl", "-i", "-r", win_id, "-b", "add,maximized_vert,maximized_horz"],
+            capture_output=True, timeout=3)
+        subprocess.run(["wmctrl", "-i", "-a", win_id], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
 def _launch() -> None:
     subprocess.run(["systemctl", "--user", "reset-failed", UNIT],
                    check=False, capture_output=True)
@@ -165,6 +207,7 @@ def cmd_open(url: str) -> None:
         print(f"開いた: {url}")
     finally:
         cdp.close()
+    _raise_and_maximize(_BROWSER_WM_CLASS)
 
 
 def cmd_scroll(direction: str) -> None:

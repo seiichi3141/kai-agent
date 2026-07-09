@@ -81,6 +81,39 @@ def _bridge_request(method: str, path: str, body: dict | None = None,
         raise RuntimeError(f"VSCode ブリッジに接続できません（配信外か拡張未起動）: {e}") from e
 
 
+# --- ウィンドウ前面化（Issue #95）-----------------------------------------------
+#
+# 第5回リハーサルで「VSCode を操作しているのにブラウザが前面で見えない」指摘を
+# 受け、VSCode 系ツール実行時に VSCode ウィンドウを前面化する（最大化はしない。
+# 最大化は stream-browser.py 側の要件）。実装は stream-browser.py の同名ヘルパー
+# と同じだが、plugin 単体完結の原則（plugins/kai_ide と kai-services 間で import
+# しない。kai_narrator の三層マスクと同じ流儀）によりコピーしている。
+# wmctrl 不在・X 不在（配信外）では例外を握りつぶして何もしない
+# （演出の失敗で本処理＝ファイル書込/タブ操作を止めない）。
+_VSCODE_WM_CLASS = "code"
+
+
+def _raise_vscode_window() -> None:
+    try:
+        r = subprocess.run(["wmctrl", "-lx"], capture_output=True, timeout=3, text=True)
+        if r.returncode != 0:
+            return
+        needle = _VSCODE_WM_CLASS.lower()
+        win_id = None
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 3:
+                continue
+            if needle in parts[2].lower():
+                win_id = parts[0]
+                break
+        if not win_id:
+            return
+        subprocess.run(["wmctrl", "-i", "-a", win_id], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
 # --- ツール handler ------------------------------------------------------------
 
 
@@ -119,6 +152,7 @@ def handle_vscode_open(args: dict | None = None, **_: Any) -> str:
         _bridge_request("POST", "/open", body)
     except RuntimeError as e:
         return str(e)
+    _raise_vscode_window()
     where = f"（{int(line)} 行目）" if body.get("line") else ""
     return f"VSCode で開いた: {path}{where}"
 
@@ -135,6 +169,7 @@ def handle_vscode_close_tab(args: dict | None = None, **_: Any) -> str:
         res = _bridge_request("POST", "/close", body)
     except RuntimeError as e:
         return str(e)
+    _raise_vscode_window()
     if close_all:
         return "すべてのタブを閉じた"
     return f"タブを閉じた: {path}（{res.get('count', 0)} 個）"
@@ -290,6 +325,7 @@ def _notify_edit(edits: list[dict]) -> None:
         _bridge_request("POST", "/edit", {"edits": abs_edits}, timeout=2.0)
     except RuntimeError:
         pass  # 拡張不在（配信外）は演出をスキップ
+    _raise_vscode_window()
 
 
 def _extract_patch_edits(patch_text: Any) -> list[dict]:

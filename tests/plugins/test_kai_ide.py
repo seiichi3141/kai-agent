@@ -82,10 +82,13 @@ def test_vscode_state_bridge_unavailable(ide, monkeypatch):
 
 def test_vscode_open_sends_path_and_line(ide, monkeypatch):
     sent = _stub_bridge(ide, monkeypatch, response={"opened": "/x.py"})
+    raised = {}
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: raised.setdefault("called", True))
     out = ide.handle_vscode_open({"path": "/x.py", "line": 42})
     assert sent["method"] == "POST" and sent["path"] == "/open"
     assert sent["body"] == {"path": "/x.py", "line": 42}
     assert "/x.py" in out and "42 行目" in out
+    assert raised.get("called")  # Issue #95: 開いたら VSCode を前面化する
 
 
 def test_vscode_open_requires_path(ide, monkeypatch):
@@ -95,7 +98,10 @@ def test_vscode_open_requires_path(ide, monkeypatch):
 
 def test_vscode_open_bridge_unavailable(ide, monkeypatch):
     _stub_bridge(ide, monkeypatch, fail=True)
+    raised = {}
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: raised.setdefault("called", True))
     assert "ブリッジに接続できません" in ide.handle_vscode_open({"path": "/x.py"})
+    assert "called" not in raised  # ブリッジ不達なら前面化もしない
 
 
 # --- vscode_close_tab -----------------------------------------------------------
@@ -103,9 +109,12 @@ def test_vscode_open_bridge_unavailable(ide, monkeypatch):
 
 def test_vscode_close_tab_by_path(ide, monkeypatch):
     sent = _stub_bridge(ide, monkeypatch, response={"closed": "/x.py", "count": 1})
+    raised = {}
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: raised.setdefault("called", True))
     out = ide.handle_vscode_close_tab({"path": "/x.py"})
     assert sent["body"] == {"path": "/x.py"}
     assert "/x.py" in out
+    assert raised.get("called")  # Issue #95: タブ操作でも VSCode を前面化する
 
 
 def test_vscode_close_tab_all(ide, monkeypatch):
@@ -275,7 +284,29 @@ def test_notify_edit_swallows_bridge_failure(ide, monkeypatch):
     def _boom(method, path, body=None, timeout=3.0):
         raise RuntimeError("bridge down")
     monkeypatch.setattr(ide, "_bridge_request", _boom)
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: None)
     ide._notify_edit([{"path": "/a.py", "action": "update"}])  # raise しないこと
+
+
+def test_notify_edit_raises_vscode_window(ide, monkeypatch):
+    # Issue #95: write_file/patch で編集通知したら VSCode を前面化する
+    monkeypatch.setattr(ide, "_bridge_request", lambda m, p, body=None, timeout=3.0: {})
+    raised = {}
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: raised.setdefault("called", True))
+    ide._notify_edit([{"path": "/a.py", "action": "update"}])
+    assert raised.get("called")
+
+
+def test_notify_edit_raises_vscode_window_even_if_bridge_fails(ide, monkeypatch):
+    # ブリッジ（拡張）が不在でも VSCode ウィンドウ自体は前面化を試みてよい
+    # （前面化は wmctrl 側で best-effort に失敗するので、ここで止める必要はない）
+    def _boom(method, path, body=None, timeout=3.0):
+        raise RuntimeError("bridge down")
+    monkeypatch.setattr(ide, "_bridge_request", _boom)
+    raised = {}
+    monkeypatch.setattr(ide, "_raise_vscode_window", lambda: raised.setdefault("called", True))
+    ide._notify_edit([{"path": "/a.py", "action": "update"}])
+    assert raised.get("called")
 
 
 def test_notify_edit_absolutizes_relative_path(ide, monkeypatch):
@@ -294,6 +325,60 @@ def test_notify_edit_keeps_absolute_path(ide, monkeypatch):
                         lambda m, p, body=None, timeout=3.0: sent.update(body or {}))
     ide._notify_edit([{"path": "/home/kai/x.py", "action": "add"}])
     assert sent["edits"] == [{"path": "/home/kai/x.py", "action": "add"}]
+
+
+# --- _raise_vscode_window（#95: ウィンドウ前面化）-------------------------------
+
+
+class _FakeCompleted:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_raise_vscode_window_activates_matching_window(ide, monkeypatch):
+    calls = []
+
+    def _fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["wmctrl", "-lx"]:
+            return _FakeCompleted(
+                stdout="0x01 0 firefox.Firefox hostname\n"
+                       "0x02 0 code.Code hostname\n")
+        return _FakeCompleted()
+
+    monkeypatch.setattr(ide.subprocess, "run", _fake_run)
+    ide._raise_vscode_window()
+    assert ["wmctrl", "-i", "-a", "0x02"] in calls
+    # 最大化はしない（要求は raise のみ）
+    assert not any("-b" in c for c in calls)
+
+
+def test_raise_vscode_window_no_match_does_nothing(ide, monkeypatch):
+    calls = []
+
+    def _fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["wmctrl", "-lx"]:
+            return _FakeCompleted(stdout="0x01 0 firefox.Firefox hostname\n")
+        return _FakeCompleted()
+
+    monkeypatch.setattr(ide.subprocess, "run", _fake_run)
+    ide._raise_vscode_window()
+    assert calls == [["wmctrl", "-lx"]]  # -a は呼ばれない
+
+
+def test_raise_vscode_window_no_wmctrl_is_silent(ide, monkeypatch):
+    def _fake_run(cmd, **kw):
+        raise FileNotFoundError("wmctrl not found")
+
+    monkeypatch.setattr(ide.subprocess, "run", _fake_run)
+    ide._raise_vscode_window()  # 例外を投げないこと
+
+
+def test_raise_vscode_window_wmctrl_error_is_silent(ide, monkeypatch):
+    monkeypatch.setattr(ide.subprocess, "run", lambda cmd, **kw: _FakeCompleted(returncode=1))
+    ide._raise_vscode_window()  # 例外を投げないこと
 
 
 # --- register -------------------------------------------------------------------
