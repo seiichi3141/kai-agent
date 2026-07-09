@@ -10,6 +10,12 @@ Restart=on-failure
 RestartSec=3
 Environment=NODE_ENV=production
 Environment=PORT=8910
+# bind の既定は 127.0.0.1（Issue #77 H-a）。trace-web は生に近い作業ログ＋スクショを
+# 配信するため、tailnet/LAN に素で公開しない。Tailscale 越しに見る場合は:
+#   1. ~/.config/kai/trace-web.env に TRACE_WEB_TOKEN=<ランダム値> を書く
+#   2. 下 2 行のコメントを外して daemon-reload + restart（初回は ?token=<値> でアクセス）
+# Environment=TRACE_WEB_HOST=0.0.0.0
+# EnvironmentFile=%h/.config/kai/trace-web.env
 
 [Install]
 WantedBy=default.target

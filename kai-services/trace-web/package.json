@@ -4,9 +4,9 @@
   "private": true,
   "description": "kai のセッションログを Web で表示する trace ビューア（Next.js・SSE リアルタイム）",
   "scripts": {
-    "dev": "next dev -p 8910 -H 0.0.0.0",
+    "dev": "next dev -p 8910 -H ${TRACE_WEB_HOST:-127.0.0.1}",
     "build": "next build",
-    "start": "next start -p 8910 -H 0.0.0.0",
+    "start": "next start -p 8910 -H ${TRACE_WEB_HOST:-127.0.0.1}",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
