@@ -182,6 +182,26 @@ def _term_target() -> str:
     return str(_plugin_cfg().get("terminal_target") or _DEFAULT_TERM_TARGET)
 
 
+# --- タイプライター演出（Issue #96: kai-term のコマンド実行も1文字ずつ見せる）----
+#
+# 「人間がタイプしている」ように見せるため、実行前に send-keys -l を1文字ずつ
+# 送ってから Enter を送る。実行そのものは既存どおり1回（Enter は最後に1度だけ）。
+# 長いコマンドで配信のテンポが崩れないよう、総タイプ時間の上限
+# （_TYPEWRITER_CAP_S）を設け、間隔を詰めても最低間隔（_TYPEWRITER_MIN_STEP_S）を
+# 下回るなら演出そのものを諦めて一括送信にフォールバックする。
+_DEFAULT_TYPEWRITER_S = 0.04
+_TYPEWRITER_CAP_S = 2.5
+_TYPEWRITER_MIN_STEP_S = 0.005
+
+
+def _typewriter_interval_s() -> float:
+    """1文字あたりのタイプ演出間隔（秒）。既定 0.04、0（以下）で演出オフ。"""
+    try:
+        return float(_plugin_cfg().get("typewriter_command_s", _DEFAULT_TYPEWRITER_S))
+    except (TypeError, ValueError):
+        return _DEFAULT_TYPEWRITER_S
+
+
 def _tmux_target_exists(target: str) -> bool:
     """送信先の tmux セッションが存在するか（無ければ built-in へフォールバック）。"""
     session = target.split(":", 1)[0].split(".", 1)[0]
@@ -204,11 +224,48 @@ def _helper_def() -> str:
     )
 
 
-def _tmux_send(target: str, literal: str) -> None:
+def _tmux_send_literal(target: str, literal: str) -> None:
     subprocess.run(["tmux", "send-keys", "-t", target, "-l", literal],
                    check=True, capture_output=True, timeout=5)
+
+
+def _tmux_send_enter(target: str) -> None:
     subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
                    check=True, capture_output=True, timeout=5)
+
+
+def _tmux_send(target: str, literal: str) -> None:
+    """literal を一括で（演出なしで）送ってから Enter を送る。"""
+    _tmux_send_literal(target, literal)
+    _tmux_send_enter(target)
+
+
+def _tmux_send_typed(target: str, literal: str, interval: float) -> None:
+    """literal を1文字ずつ送ってから Enter を送る（タイプライター演出）。
+
+    実行は既存どおり1回（Enter は最後に1度だけ）。演出は「入力の見え方」だけの
+    変更で、送信内容そのものは変えない。次の場合は演出せず一括送信する:
+    - interval が 0 以下（演出オフ）
+    - literal が空
+    - literal に改行を含む（ヒアドキュメント等の複数行コマンド。tmux 側の解釈が
+      複雑になるため演出しない）
+    - 上限時間（_TYPEWRITER_CAP_S）に収まるよう間隔を詰めても、なお最低間隔
+      （_TYPEWRITER_MIN_STEP_S）を下回るほど長いコマンド（演出の意味が薄く、
+      配信のテンポを崩すだけなので諦めて一括送信にする）
+    """
+    if interval <= 0 or not literal or "\n" in literal:
+        _tmux_send(target, literal)
+        return
+    step = interval
+    if len(literal) * step > _TYPEWRITER_CAP_S:
+        step = _TYPEWRITER_CAP_S / len(literal)
+    if step < _TYPEWRITER_MIN_STEP_S:
+        _tmux_send(target, literal)
+        return
+    for ch in literal:
+        _tmux_send_literal(target, ch)
+        time.sleep(step)
+    _tmux_send_enter(target)
 
 
 def _ensure_helper(target: str) -> None:
@@ -240,7 +297,7 @@ def _run_visible(command: str, target: str, timeout: float) -> dict | None:
                 pass
         # command 内の単一引用符をエスケープして kai '...' で渡す
         escaped = command.replace("'", "'\\''")
-        _tmux_send(target, f"kai '{escaped}'")
+        _tmux_send_typed(target, f"kai '{escaped}'", _typewriter_interval_s())
     except Exception:
         return None  # 送信失敗 → フォールバック
     deadline = time.monotonic() + timeout

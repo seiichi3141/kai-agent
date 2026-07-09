@@ -153,8 +153,15 @@ def test_terminal_complex_mode_falls_back(ide, monkeypatch):
     assert ide.handle_terminal({"command": "python", "pty": True}) == "FALLBACK"
 
 
-def _wire_visible(ide, monkeypatch, tmp_path, output_text):
-    """可視実行の副作用（ヘルパー ready・出力/マーカー生成）を tmp_path でスタブする。"""
+def _wire_visible(ide, monkeypatch, tmp_path, output_text, typewriter_command_s=0.0):
+    """可視実行の副作用（ヘルパー ready・出力/マーカー生成）を tmp_path でスタブする。
+
+    `tmux send-keys` は subprocess.run 呼び出し列として記録するので、タイプ演出
+    （1文字ずつの -l 送信・最後の Enter）の検証にそのまま使える。Enter が送られた
+    時点で「実行完了」とみなして出力/マーカーを生成する（実際の tmux ペインで
+    Enter が入力を確定させるのと同じタイミング）。二重に Enter が送られたら
+    （＝二重実行）assert で落とす。
+    """
     out = tmp_path / "out"
     done = tmp_path / "done"
     ready = tmp_path / "ready"
@@ -162,44 +169,160 @@ def _wire_visible(ide, monkeypatch, tmp_path, output_text):
     monkeypatch.setattr(ide, "_TERM_DONE", str(done))
     monkeypatch.setattr(ide, "_TERM_READY", str(ready))
     monkeypatch.setattr(ide, "_tmux_target_exists", lambda t: True)
+    monkeypatch.setattr(ide, "_plugin_cfg",
+                        lambda: {"typewriter_command_s": typewriter_command_s})
     ready.write_text("")  # ヘルパー定義済み扱い
 
-    sent = []
+    calls = []
 
-    def _fake_send(target, literal):
-        sent.append(literal)
-        # kai '<cmd>' が送られたら出力/マーカーを生成（実行を擬似）
-        if literal.startswith("kai '"):
+    def _fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if cmd[-1] == "Enter":
+            assert not done.exists(), "Enter（実行確定）が複数回送られた＝二重実行"
             out.write_text(output_text)
             done.write_text("KAI_EXIT:0\n")
+        return _FakeCompleted()
 
-    monkeypatch.setattr(ide, "_tmux_send", _fake_send)
-    return sent
+    monkeypatch.setattr(ide.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ide.time, "sleep", lambda s: None)
+    return calls
+
+
+def _reconstruct_literal(calls, target):
+    """calls（subprocess.run 引数列）から -l で送られた文字列を連結して復元する。"""
+    prefix = ["tmux", "send-keys", "-t", target, "-l"]
+    return "".join(c[5] for c in calls if c[:5] == prefix)
 
 
 def test_terminal_visible_run_captures_output(ide, monkeypatch, tmp_path):
-    sent = _wire_visible(ide, monkeypatch, tmp_path, "hello\nworld\n")
+    calls = _wire_visible(ide, monkeypatch, tmp_path, "hello\nworld\n",
+                          typewriter_command_s=0.04)
     out = ide.handle_terminal({"command": "echo hello"})
     data = __import__("json").loads(out)
     assert data["exit_code"] == 0
     assert "hello" in data["output"] and "world" in data["output"]
-    # 視聴者には kai '...' だけが見える（配管が露出しない）
-    assert any(s == "kai 'echo hello'" for s in sent)
-    assert not any("tee" in s for s in sent)
+    # 視聴者には kai '...' だけが見える（配管が露出しない）。1文字ずつ送られていても
+    # 復元すれば同じ文字列で、Enter は最後の1回だけ（＝実行は1回だけ）
+    target = ide._DEFAULT_TERM_TARGET
+    assert _reconstruct_literal(calls, target) == "kai 'echo hello'"
+    assert calls[-1] == ["tmux", "send-keys", "-t", target, "Enter"]
+    assert sum(1 for c in calls if c[-1] == "Enter") == 1
+    assert not any("tee" in str(c) for c in calls)
 
 
 def test_terminal_visible_masks_secrets(ide, monkeypatch, tmp_path):
-    _wire_visible(ide, monkeypatch, tmp_path, "token=ghp_ABCDEFGHIJKLMNOPQRSTUV\n")
+    _wire_visible(ide, monkeypatch, tmp_path, "token=ghp_ABCDEFGHIJKLMNOPQRSTUV\n",
+                  typewriter_command_s=0.04)
     out = ide.handle_terminal({"command": "cat .netrc"})
     assert "ghp_ABCDEFGHIJKLMNOPQRSTUV" not in out
     assert "«redacted»" in out
 
 
 def test_terminal_visible_escapes_single_quotes(ide, monkeypatch, tmp_path):
-    sent = _wire_visible(ide, monkeypatch, tmp_path, "ok\n")
+    calls = _wire_visible(ide, monkeypatch, tmp_path, "ok\n", typewriter_command_s=0.04)
     ide.handle_terminal({"command": "echo 'hi there'"})
     # 単一引用符は '\'' にエスケープして kai '...' に包む
-    assert any(s == "kai 'echo '\\''hi there'\\'''" for s in sent)
+    target = ide._DEFAULT_TERM_TARGET
+    assert _reconstruct_literal(calls, target) == "kai 'echo '\\''hi there'\\'''"
+
+
+# --- terminal のタイプライター演出（Issue #96）----------------------------------
+
+
+def test_terminal_typewriter_disabled_sends_bulk(ide, monkeypatch, tmp_path):
+    # typewriter_command_s=0 は演出オフ：1回の -l 一括送信 + Enter
+    calls = _wire_visible(ide, monkeypatch, tmp_path, "ok\n", typewriter_command_s=0)
+    ide.handle_terminal({"command": "echo hello"})
+    target = ide._DEFAULT_TERM_TARGET
+    assert calls == [
+        ["tmux", "send-keys", "-t", target, "-l", "kai 'echo hello'"],
+        ["tmux", "send-keys", "-t", target, "Enter"],
+    ]
+
+
+def test_tmux_send_typed_char_by_char(ide, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ide.subprocess, "run",
+                        lambda cmd, **kw: calls.append(list(cmd)) or _FakeCompleted())
+    sleeps = []
+    monkeypatch.setattr(ide.time, "sleep", lambda s: sleeps.append(s))
+    ide._tmux_send_typed("kai-term", "echo hi", 0.04)
+    literal_calls = calls[:-1]
+    assert calls[-1] == ["tmux", "send-keys", "-t", "kai-term", "Enter"]
+    assert len(literal_calls) == len("echo hi")
+    assert all(c[:5] == ["tmux", "send-keys", "-t", "kai-term", "-l"] for c in literal_calls)
+    assert all(len(c[5]) == 1 for c in literal_calls)  # 1文字ずつ
+    assert "".join(c[5] for c in literal_calls) == "echo hi"
+    assert len(sleeps) == len("echo hi")
+    assert all(s == pytest.approx(0.04) for s in sleeps)
+
+
+def test_tmux_send_typed_interval_zero_is_bulk(ide, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ide.subprocess, "run",
+                        lambda cmd, **kw: calls.append(list(cmd)) or _FakeCompleted())
+    ide._tmux_send_typed("kai-term", "echo hi", 0.0)
+    assert calls == [
+        ["tmux", "send-keys", "-t", "kai-term", "-l", "echo hi"],
+        ["tmux", "send-keys", "-t", "kai-term", "Enter"],
+    ]
+
+
+def test_tmux_send_typed_multiline_sends_bulk(ide, monkeypatch):
+    # ヒアドキュメント等の複数行コマンドは演出せず一括送信
+    calls = []
+    monkeypatch.setattr(ide.subprocess, "run",
+                        lambda cmd, **kw: calls.append(list(cmd)) or _FakeCompleted())
+    sleeps = []
+    monkeypatch.setattr(ide.time, "sleep", lambda s: sleeps.append(s))
+    ide._tmux_send_typed("kai-term", "echo a\necho b", 0.04)
+    assert calls == [
+        ["tmux", "send-keys", "-t", "kai-term", "-l", "echo a\necho b"],
+        ["tmux", "send-keys", "-t", "kai-term", "Enter"],
+    ]
+    assert sleeps == []
+
+
+def test_tmux_send_typed_caps_total_time_for_long_command(ide, monkeypatch):
+    # 0.04*200=8s > 上限2.5s のはずなので、間隔を詰めて上限内に収める
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(ide.subprocess, "run",
+                        lambda cmd, **kw: calls.append(list(cmd)) or _FakeCompleted())
+    monkeypatch.setattr(ide.time, "sleep", lambda s: sleeps.append(s))
+    command = "x" * 200
+    ide._tmux_send_typed("kai-term", command, 0.04)
+    # まだ1文字ずつ送っている（間隔を詰めるだけで一括送信への切替は起きない）
+    assert len(sleeps) == len(command)
+    assert all(s < 0.04 for s in sleeps)  # 間隔が詰まっている
+    assert sum(sleeps) <= ide._TYPEWRITER_CAP_S + 1e-9
+    assert calls[-1] == ["tmux", "send-keys", "-t", "kai-term", "Enter"]
+
+
+def test_tmux_send_typed_extremely_long_switches_to_bulk(ide, monkeypatch):
+    # 間隔を詰めても最低間隔を下回るほど長いコマンドは一括送信に切り替える
+    calls = []
+    monkeypatch.setattr(ide.subprocess, "run",
+                        lambda cmd, **kw: calls.append(list(cmd)) or _FakeCompleted())
+    sleeps = []
+    monkeypatch.setattr(ide.time, "sleep", lambda s: sleeps.append(s))
+    command = "x" * 5000
+    ide._tmux_send_typed("kai-term", command, 0.04)
+    assert calls == [
+        ["tmux", "send-keys", "-t", "kai-term", "-l", command],
+        ["tmux", "send-keys", "-t", "kai-term", "Enter"],
+    ]
+    assert sleeps == []
+
+
+def test_typewriter_interval_reads_config(ide, monkeypatch):
+    monkeypatch.setattr(ide, "_plugin_cfg", lambda: {"typewriter_command_s": 0.02})
+    assert ide._typewriter_interval_s() == 0.02
+
+
+def test_typewriter_interval_defaults_when_unset(ide, monkeypatch):
+    monkeypatch.setattr(ide, "_plugin_cfg", lambda: {})
+    assert ide._typewriter_interval_s() == ide._DEFAULT_TYPEWRITER_S
 
 
 # --- write_file / patch override（#49 PR-3）------------------------------------

@@ -159,13 +159,14 @@ replay ではなく本物の 1 回実行。
 
 ## 7. 設定
 
-| キー                                          | 置き場所    | デフォルト              | 説明                                    |
-| --------------------------------------------- | ----------- | ----------------------- | --------------------------------------- |
-| `plugins.enabled: [..., kai_ide]`             | config.yaml | —                       | plugin 有効化                           |
-| `plugins.entries.kai_ide.allow_tool_override` | config.yaml | —                       | **true 必須**（built-in 差替の opt-in） |
-| `plugins.entries.kai_ide.bridge_url`          | config.yaml | `http://127.0.0.1:8920` | ブリッジ URL                            |
-| `plugins.entries.kai_ide.terminal_pane`       | config.yaml | `kai-stream.work`       | 統合ターミナルの tmux ペイン            |
-| `plugins.entries.kai_ide.enabled`             | config.yaml | true                    | 演出の有効化（false で内部処理のみ）    |
+| キー                                           | 置き場所    | デフォルト              | 説明                                                                       |
+| ---------------------------------------------- | ----------- | ----------------------- | -------------------------------------------------------------------------- |
+| `plugins.enabled: [..., kai_ide]`              | config.yaml | —                       | plugin 有効化                                                              |
+| `plugins.entries.kai_ide.allow_tool_override`  | config.yaml | —                       | **true 必須**（built-in 差替の opt-in）                                    |
+| `plugins.entries.kai_ide.bridge_url`           | config.yaml | `http://127.0.0.1:8920` | ブリッジ URL                                                               |
+| `plugins.entries.kai_ide.terminal_pane`        | config.yaml | `kai-stream.work`       | 統合ターミナルの tmux ペイン                                               |
+| `plugins.entries.kai_ide.enabled`              | config.yaml | true                    | 演出の有効化（false で内部処理のみ）                                       |
+| `plugins.entries.kai_ide.typewriter_command_s` | config.yaml | `0.04`                  | terminal override の1文字タイプ演出の間隔（秒）。0 で演出オフ（Issue #96） |
 
 ## 8. セキュリティ
 
