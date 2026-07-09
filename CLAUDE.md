@@ -4,12 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 このリポジトリは **Hermes Agent**（Nous Research 製の自己改善型 AI エージェント）の fork で、この上に AITuber「kai」を実装します（要件は `docs/kai/requirements.md`）。
 
-## ブランチ戦略（2026-07-05 改訂）
+## ブランチ戦略（2026-07-05 改訂・2026-07-09 org 移管）
+
+- **リポジトリ** — `HyuCode/kai-agent`（2026-07-09 に seiichi3141/kai-agent から org 移管。マージキュー有効化のため）。`gh` 操作では `--repo HyuCode/kai-agent` を明示する。
 
 - **`main`** — kai の稼働・アップデート用メインブランチ（GitHub デフォルト）。kai 固有の修正はすべてここに積む。GCP / kai-vm 上の kai はこのブランチを pull / self-update する。PR のマージ先。
 - **`upstream`** — upstream（NousResearch/hermes-agent、remote 名も `upstream`）追従ミラー。**kai のコミットを載せない**。`upstream/main`（remote-tracking）から fast-forward のみ。
 - **upstream 追従** — `upstream/main`（remote）→ `upstream`（ブランチ、ff）→ `main` へ merge、の一方向。
-- **機能開発** — `feature/*` ブランチ → PR → `main`。
+- **機能開発** — `feature/*` ブランチ → PR → `main`。**main はルールセットで保護**（PR 必須・`kai verify` 必須チェック・**マージキュー**。直 push・force-push・削除は不可）。マージは「Merge when ready」でキューに入り、キュー内ビルドで `kai verify` が再実行されてから入る。
 - **注意（命名の重なり）** — remote 名 `upstream` とブランチ名 `upstream` が同名。`git switch upstream` はブランチ、`upstream/main` は remote-tracking を指す。曖昧な操作では `origin upstream` / `upstream main` のように remote を明示する。
 - 旧 `kai/main` は廃止済み（今後は使わない）。
 - **CI** — kai のゲートは `kai CI`（`.github/workflows/kai-ci.yml`、`scripts/kai/verify.sh` を実行）のみ。upstream 由来のワークフロー（CI/Tests/Typecheck/Publish to PyPI/Docker/Deploy Site 等16個）は fork で `disabled_manually`（誤作動と kai push での失敗ノイズを防ぐため）。upstream 追従 merge の検証で一時的に必要なら `gh workflow enable <id>` で戻す。詳細は `docs/kai/loop-engineering.md` §6.1。
