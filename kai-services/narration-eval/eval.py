@@ -60,12 +60,19 @@ GENERIC_ALLOW = {
 #    are not false-positives; those are handled by the translation layer, not here.
 #  - raw ref: raw Issue/PR number notation (#65, "Issue #65", "PR #56").
 #  - raw json: a { ... } blob leaking into speech.
+#  - plaintext secret: a key:value / key=value credential assignment or PEM header
+#    reaching subtitles/TTS (Issue #71 — plaintext secrets that are neither env
+#    values nor known token formats, e.g. "db_password: hunter2").
 LEAK_PATTERNS = {
     "commit_hash": re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])"),
     "branch_slug": re.compile(r"\b(?:feature|fix|chore|docs|refactor)/[\w./\-]+"),
     "todo_id": re.compile(r"\b[A-Za-z]*[0-9]+[A-Za-z]*-[A-Za-z0-9_\-]+\b"),
     "raw_ref": re.compile(r"(?i)(?:issue|pr)\s*#?\s*[0-9]+|#[0-9]+"),
     "raw_json": re.compile(r"\{[^{}]*[:\[][^{}]*\}"),
+    "plaintext_secret": re.compile(
+        r"(?i)(?:PRIVATE\s+KEY"
+        r"|(?:password|passwd|pwd|api[_-]?key|apikey|secret|token|credential)s?"
+        r"\s*[\"']?\s*[:=]\s*\S+)"),
 }
 
 # FR9: target utterance length (chars). 01-target 1.2 / FR9.
@@ -133,6 +140,13 @@ def extract_recorded(ops, source_filter):
     return utts
 
 
+def _is_skip_candidate(text):
+    """Mirror of the narrator plugin's _is_skip: the generator decided NOT to
+    speak this slot. A SKIP is silence, not an utterance — scoring it as text
+    would distort the comparison (silence is often the CORRECT behaviour)."""
+    return str(text or "").strip().rstrip("。.！!、").upper() == "SKIP"
+
+
 def apply_candidates(utts, ops, cand_path):
     """Generator hook: replace recorded texts with a generator's candidates.
 
@@ -140,6 +154,10 @@ def apply_candidates(utts, ops, cand_path):
     narrator utterances. Each item is either "text" or {"text": "..."}.
     (This is the seam where a real narrator generator gets connected; the
     grounding/op association is preserved from the fixture.)
+
+    Candidates whose text is "SKIP" (the plugin's silence sentinel) are
+    EXCLUDED from scoring; the count is reported via the second return value.
+    Returns (utterances, n_skipped).
     """
     with open(cand_path, encoding="utf-8") as f:
         cands = json.load(f)
@@ -148,11 +166,15 @@ def apply_candidates(utts, ops, cand_path):
         print(f"[warn] candidates ({len(norm)}) != recorded utterances ({len(utts)}); "
               f"aligning first {min(len(norm), len(utts))}", file=sys.stderr)
     out = []
+    n_skipped = 0
     for i in range(min(len(norm), len(utts))):
+        if _is_skip_candidate(norm[i]):
+            n_skipped += 1
+            continue
         u = dict(utts[i])
         u["text"] = norm[i]
         out.append(u)
-    return out
+    return out, n_skipped
 
 
 # --------------------------------------------------------------------------
@@ -239,6 +261,23 @@ def confab_tokens_for(text, grounding, generic_allow):
 # Whole-fixture evaluation
 # --------------------------------------------------------------------------
 
+def _fr8_kickoff(per):
+    """FR8 (Issue #72): kickoff quality. A real kickoff explains what/why in
+    2-3 sentences; a bare operation snapshot in the kickoff phase doesn't count
+    as an explanation. Mechanical proxy: length >= 40 chars AND a reason/desire
+    marker ("〜から/ため/ので/たい")."""
+    kick = [p for p in per if p.get("phase") == "kickoff"]
+    why_markers = REASON_MARKERS + ["たい"]
+    explained = any(
+        p["chars"] >= 40 and any(w in p["text"] for w in why_markers) for p in kick)
+    return {
+        "utterances": len(kick),
+        "present": bool(kick),
+        "explains_why": explained,
+        "detail": "配信冒頭で『何を・なぜ』が説明されているか（FR8。参考値・composite 非加算）",
+    }
+
+
 def evaluate(ops, issue, utts):
     grounding = build_grounding(ops, issue)
 
@@ -315,6 +354,11 @@ def evaluate(ops, issue, utts):
             "target_range": [FR9_MIN, FR9_MAX],
             "detail": "1発話の文字数（20〜80字目安）",
         },
+        # FR8 (Issue #72): does the stream OPEN with a kickoff that explains
+        # what/why (2-3 sentences with a reason marker), not just an operation
+        # snapshot? Informational — NOT in the composite, so existing baselines
+        # are unaffected; use it to compare pre/post kickoff implementations.
+        "FR8_kickoff": _fr8_kickoff(per),
         "confabulation": {
             "flagged": bool(session_confab),
             "session_tokens": session_confab,
@@ -395,6 +439,10 @@ def render_human(fixture_name, scores, worst):
     f9 = scores["FR9_length"]
     L.append(f"FR9 文字数         : avg={f9['avg_chars']}  min={f9['min_chars']}  "
              f"max={f9['max_chars']}  range外={f9['out_of_range']} (目標{f9['target_range']})")
+    f8 = scores["FR8_kickoff"]
+    f8_state = ("説明あり" if f8["explains_why"]
+                else "発話あり(説明なし)" if f8["present"] else "なし")
+    L.append(f"FR8 kickoff        : {f8_state} ({f8['utterances']}件・参考値)")
     cf = scores["confabulation"]
     flag = "⚑ FLAGGED" if cf["flagged"] else "clear"
     L.append(f"confabulation      : {flag}  接地外反復語={cf['session_tokens']}")
@@ -424,15 +472,20 @@ def main():
     ops, issue = load_fixture(args.fixture)
     utts = extract_recorded(ops, args.source)
     mode = "recorded"
+    n_skipped = 0
     if args.candidates:
-        utts = apply_candidates(utts, ops, args.candidates)
+        utts, n_skipped = apply_candidates(utts, ops, args.candidates)
         mode = "candidate"
 
     scores, worst, per = evaluate(ops, issue, utts)
+    if mode == "candidate":
+        scores["skipped_candidates"] = n_skipped
     name = args.fixture.rsplit("/", 1)[-1]
 
     if not args.quiet:
         print(render_human(name, scores, worst))
+        if mode == "candidate":
+            print(f"\nSKIP（沈黙）候補: {n_skipped} 件（採点対象外）")
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
