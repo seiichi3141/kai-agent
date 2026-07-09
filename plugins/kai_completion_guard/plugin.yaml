@@ -1,0 +1,8 @@
+name: kai_completion_guard
+version: 0.1.0
+description: "kai 完了報告ゲート（Issue #97）。未実施の検証（CI 緑・mergeable・verify --pr）を『確認済み』と語る最終応答を機械検出し、決定的なヘッジ注記を追記＋trace へ confab_flagged を発行する。"
+author: kai
+hooks:
+  - post_tool_call
+  - transform_llm_output
+  - on_session_start
