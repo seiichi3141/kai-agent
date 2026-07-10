@@ -396,6 +396,37 @@ def test_heartbeat_idle_lines_rotate_while_thinking(narrator_mod, narrator, monk
     assert sent[0]["text"] != sent[1]["text"]  # ローテーションで同文を避ける
 
 
+def test_heartbeat_idle_templates_have_enough_variation(narrator_mod):
+    assert len(narrator_mod._HEARTBEAT_IDLE_LINES) >= 6
+    assert len(set(narrator_mod._HEARTBEAT_IDLE_LINES)) == len(narrator_mod._HEARTBEAT_IDLE_LINES)
+
+
+def test_heartbeat_idle_line_avoids_recent_text(narrator_mod):
+    recent = [narrator_mod._HEARTBEAT_IDLE_LINES[0]]
+    text = narrator_mod._heartbeat_idle_line(0, recent=recent)
+    assert text != recent[0]
+    assert text == narrator_mod._HEARTBEAT_IDLE_LINES[1]
+
+
+def test_heartbeat_idle_line_mentions_elapsed_minutes(narrator_mod):
+    text = narrator_mod._heartbeat_idle_line(0, elapsed_s=125)
+    assert "2分" in text
+    assert "経ってる" in text
+
+
+def test_heartbeat_idle_uses_thinking_elapsed(narrator_mod, narrator, monkeypatch):
+    import time as _time
+    sent = []
+    monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))
+    narrator.push_tool_event({"tool": "read_file", "args": {"path": "a.py"}})
+    narrator._events.clear()
+    narrator.set_thinking(True)
+    narrator._thinking_started_at = _time.monotonic() - 180
+    narrator._maybe_heartbeat()
+    assert len(sent) == 1
+    assert "3分" in sent[0]["text"]
+
+
 def test_heartbeat_silent_when_nothing_running(narrator_mod, narrator, monkeypatch):
     sent = []
     monkeypatch.setattr(narrator_mod, "_post_say", lambda url, payload, timeout=3.0: sent.append(payload))

@@ -679,8 +679,37 @@ def _is_flagship(ev: dict) -> bool:
 _HEARTBEAT_IDLE_LINES = (
     "いま考えを整理してるところ。ちょっと待っててね",
     "うーん、次の一手を考え中だよ",
-    "まだ考え中。もうすこしだけ待ってね",
+    "まだ応答待ちだよ。もうすこしだけ待ってね",
+    "頭の中で手順を組み直してるよ。みんな、少しだけ待っててね",
+    "いま方針を確認してるところだよ。止まってはいないからね",
+    "返事をまとめてる途中だよ。もう少しで次に進めるはず",
+    "ちょっと長めに考えてるよ。ここは慎重に進めるね",
+    "まだ考え中だよ。画面は静かだけど、裏では応答を待ってるところ",
 )
+
+
+def _format_elapsed_ja(elapsed_s: float) -> str:
+    """ハートビート用に、長すぎない日本語の経過時間へ丸める。"""
+    seconds = max(0, int(elapsed_s))
+    if seconds < 60:
+        return f"{seconds}秒"
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes}分"
+
+
+def _heartbeat_idle_line(index: int, recent: list[str] | None = None,
+                         elapsed_s: float = 0.0) -> str:
+    """LLM 思考中フィラーをローテートし、直近と同文なら次候補へ送る。"""
+    recent_set = set(recent or [])
+    for offset in range(len(_HEARTBEAT_IDLE_LINES)):
+        text = _HEARTBEAT_IDLE_LINES[(index + offset) % len(_HEARTBEAT_IDLE_LINES)]
+        if text not in recent_set:
+            break
+    else:
+        text = _HEARTBEAT_IDLE_LINES[index % len(_HEARTBEAT_IDLE_LINES)]
+    if elapsed_s >= 120:
+        text = f"{text} もう{_format_elapsed_ja(elapsed_s)}くらい経ってるね"
+    return text
 
 
 def _xml_escape(s: str) -> str:
@@ -810,6 +839,7 @@ class _Narrator:
         self._state_lock = threading.Lock()
         self._running_tool: dict | None = None
         self._thinking: bool = False
+        self._thinking_started_at: float = 0.0
         self._heartbeat_idx: int = 0
         # まだ実作業（ツール実行）を1つもしていない冒頭では「考え中」フィラーを
         # 喋らない。毎回冒頭が定型フィラーになるのを防ぐ（最初の発話を実作業由来に）。
@@ -851,6 +881,10 @@ class _Narrator:
 
     def set_thinking(self, thinking: bool) -> None:
         with self._state_lock:
+            if thinking and not self._thinking:
+                self._thinking_started_at = time.monotonic()
+            elif not thinking:
+                self._thinking_started_at = 0.0
             self._thinking = thinking
 
     def set_kickoff_material(self, text: str, session_id: str = "") -> None:
@@ -1061,6 +1095,7 @@ class _Narrator:
         with self._state_lock:
             running = dict(self._running_tool) if self._running_tool else None
             thinking = self._thinking
+            thinking_started_at = self._thinking_started_at
             had_activity = self._had_tool_activity
 
         if running is not None:
@@ -1096,7 +1131,12 @@ class _Narrator:
         if thinking and had_activity:
             # 冒頭（まだツール未実行）ではフィラーを出さない。最初の発話は実作業
             # 由来の実況にする（毎回冒頭が定型フィラーになるのを防ぐ）。
-            text = _HEARTBEAT_IDLE_LINES[self._heartbeat_idx % len(_HEARTBEAT_IDLE_LINES)]
+            elapsed_s = time.monotonic() - thinking_started_at if thinking_started_at else 0.0
+            text = _heartbeat_idle_line(
+                self._heartbeat_idx,
+                recent=[self._last_text, *list(self._recent_spoken)],
+                elapsed_s=elapsed_s,
+            )
             self._heartbeat_idx += 1
             self._say(text, source="narrator", priority="low")
 
